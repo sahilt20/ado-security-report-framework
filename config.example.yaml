@@ -1,0 +1,40 @@
+# Azure DevOps organization name
+organization: "your-organization"
+
+# Target project name
+project: "your-project"
+
+# Personal Access Token (can use environment variable)
+pat: "${ADO_PAT}"
+
+# Output configuration
+output:
+  path: "./reports"
+  filename: "security_report_{timestamp}.xlsx"
+
+# Report options
+options:
+  # Include inherited permissions in analysis
+  include_inherited: true
+  
+  # Include disabled/inactive users
+  include_disabled_users: false
+  
+  # Security namespaces to include in the report
+  # Leave empty to include all namespaces
+  namespaces:
+    - Project
+    - Git Repositories
+    - Build
+    - ReleaseManagement
+    - AnalyticsViews
+    - Workitems
+    - Identity
+    - Iteration
+    - CSS  # Area path
+    
+  # Maximum API calls per second (rate limiting)
+  rate_limit: 10
+  
+  # Request timeout in seconds
+  timeout: 30
