@@ -123,10 +123,19 @@ def generate_dummy_users():
             access_level=access,
             license_display_name=access,
             date_created=datetime.now() - timedelta(days=random.randint(30, 365)),
-            last_accessed=datetime.now() - timedelta(days=random.randint(0, 30)) if is_active else None,
+            last_accessed=datetime.now() - timedelta(days=random.randint(0, 30)) if is_active else datetime.now() - timedelta(days=random.randint(120, 300)),
         ))
 
     return users
+
+
+def _set_user_group_memberships(groups, users):
+    """Set group_memberships on users based on group member assignments."""
+    user_map = {u.descriptor: u for u in users}
+    for g in groups:
+        for m in g.members:
+            if m.member_type == "user" and m.descriptor in user_map:
+                user_map[m.descriptor].group_memberships.append(g.descriptor)
 
 
 def assign_members_to_groups(groups, users):
@@ -518,6 +527,7 @@ def main():
     groups = generate_dummy_groups()
     users = generate_dummy_users()
     assign_members_to_groups(groups, users)
+    _set_user_group_memberships(groups, users)
     namespaces = generate_dummy_namespaces()
     permissions = generate_dummy_permissions(groups, users)
 
