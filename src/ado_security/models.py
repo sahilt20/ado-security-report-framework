@@ -191,6 +191,36 @@ class Permission:
     state: PermissionState
     is_inherited: bool = False
     source: str = ""  # Where the permission comes from
+    resource_display_name: str = ""  # Human-readable resource name (repo name, pipeline name, etc.)
+
+    @property
+    def resource_label(self) -> str:
+        """Return human-readable resource name, falling back to token."""
+        if self.resource_display_name:
+            return self.resource_display_name
+        return self._humanize_token(self.resource_token)
+
+    @staticmethod
+    def _humanize_token(token: str) -> str:
+        """Convert an Azure DevOps ACL token to a human-readable label."""
+        if not token:
+            return "(project-level)"
+        # $PROJECT:vstfs:///... -> "Project Root"
+        if token.startswith("$PROJECT"):
+            return "Project Root"
+        # repoV2/<project_id>/<repo_id> or similar
+        if token.startswith("repoV2/") or token.startswith("repoV2\\"):
+            parts = token.replace("\\", "/").split("/")
+            if len(parts) >= 3:
+                return f"Repository ({parts[-1][:8]}...)"
+            return "All Repositories"
+        # Build token patterns: <project_id>/<def_id>
+        if "/" in token and len(token.split("/")) == 2:
+            return f"Resource ({token.split('/')[-1][:12]})"
+        # Release token patterns
+        if token.startswith("$RELEASE"):
+            return "Release Root"
+        return token if len(token) <= 30 else f"{token[:27]}..."
 
 
 @dataclass

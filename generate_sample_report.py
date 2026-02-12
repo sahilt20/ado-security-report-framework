@@ -89,7 +89,6 @@ def generate_dummy_groups():
             description="External contractors with limited access.",
         ),
     ]
-
     return groups
 
 
@@ -309,152 +308,200 @@ def generate_dummy_namespaces():
     return namespaces
 
 
+def _perm(desc, name, ns, token, perm_name, bit, state, resource_name="", **kw):
+    """Helper to create Permission with resource_display_name."""
+    return Permission(desc, name, ns, token, perm_name, bit, state,
+                      resource_display_name=resource_name, **kw)
+
+
 def generate_dummy_permissions(groups, users):
-    """Generate sample permissions."""
+    """Generate sample permissions with realistic resource display names."""
     permissions = GranularPermissions()
 
-    # Project permissions
+    # ----------------------------------------------------------------
+    # Project-level permissions
+    # ----------------------------------------------------------------
     project_perms = [
-        # Admins have all project permissions
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Project", "$PROJECT:proj1",
-                  "View project-level information", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Project", "$PROJECT:proj1",
-                  "Edit project-level information", 2, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Project", "$PROJECT:proj1",
-                  "Delete project", 4, PermissionState.ALLOW),
-        # Contributors
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Project", "$PROJECT:proj1",
-                  "View project-level information", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Project", "$PROJECT:proj1",
-                  "Edit project-level information", 2, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Project", "$PROJECT:proj1",
-                  "Delete project", 4, PermissionState.DENY),
-        # Readers
-        Permission("vssgp.Uy0xLTktNA", "Readers", "Project", "$PROJECT:proj1",
-                  "View project-level information", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNA", "Readers", "Project", "$PROJECT:proj1",
-                  "Edit project-level information", 2, PermissionState.DENY),
-        # External Contractors
-        Permission("vssgp.custom3", "External Contractors", "Project", "$PROJECT:proj1",
-                  "View project-level information", 1, PermissionState.INHERITED_ALLOW, is_inherited=True),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Project", "$PROJECT:proj1",
+              "View project-level information", 1, PermissionState.ALLOW, "MyProject"),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Project", "$PROJECT:proj1",
+              "Edit project-level information", 2, PermissionState.ALLOW, "MyProject"),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Project", "$PROJECT:proj1",
+              "Delete project", 4, PermissionState.ALLOW, "MyProject"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Project", "$PROJECT:proj1",
+              "View project-level information", 1, PermissionState.ALLOW, "MyProject"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Project", "$PROJECT:proj1",
+              "Edit project-level information", 2, PermissionState.ALLOW, "MyProject"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Project", "$PROJECT:proj1",
+              "Delete project", 4, PermissionState.DENY, "MyProject"),
+        _perm("vssgp.Uy0xLTktNA", "Readers", "Project", "$PROJECT:proj1",
+              "View project-level information", 1, PermissionState.ALLOW, "MyProject"),
+        _perm("vssgp.Uy0xLTktNA", "Readers", "Project", "$PROJECT:proj1",
+              "Edit project-level information", 2, PermissionState.DENY, "MyProject"),
+        _perm("vssgp.custom3", "External Contractors", "Project", "$PROJECT:proj1",
+              "View project-level information", 1, PermissionState.INHERITED_ALLOW,
+              "MyProject", is_inherited=True),
     ]
     permissions.project.permissions.extend(project_perms)
 
-    # Repos permissions
+    # ----------------------------------------------------------------
+    # Git Repository permissions (proper repo names)
+    # ----------------------------------------------------------------
     repos_perms = [
-        # Admins
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
-                  "Administer", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
-                  "Read", 2, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
-                  "Contribute", 4, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
-                  "Force push", 8, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
-                  "Bypass policies", 128, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
-                  "Manage permissions", 8192, PermissionState.ALLOW),
-        # Contributors
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories", "repo1",
-                  "Read", 2, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories", "repo1",
-                  "Contribute", 4, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories", "repo1",
-                  "Create branch", 16, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories", "repo1",
-                  "Force push", 8, PermissionState.DENY),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories", "repo1",
-                  "Bypass policies", 128, PermissionState.DENY),
-        # Readers
-        Permission("vssgp.Uy0xLTktNA", "Readers", "Git Repositories", "repo1",
-                  "Read", 2, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNA", "Readers", "Git Repositories", "repo1",
-                  "Contribute", 4, PermissionState.DENY),
-        # DevOps Team - special permissions
-        Permission("vssgp.custom1", "DevOps Team", "Git Repositories", "repo1",
-                  "Bypass policies", 128, PermissionState.ALLOW),
-        Permission("vssgp.custom1", "DevOps Team", "Git Repositories", "repo1",
-                  "Force push", 8, PermissionState.ALLOW),
-        Permission("vssgp.custom1", "DevOps Team", "Git Repositories", "repo1",
-                  "Delete repository", 512, PermissionState.ALLOW),
+        # Admins on main-api repo
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Administer", 1, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Read", 2, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Contribute", 4, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Force push", 8, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Bypass policies", 128, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Manage permissions", 8192, PermissionState.ALLOW,
+              "main-api"),
+        # Contributors on main-api
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Read", 2, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Contribute", 4, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Create branch", 16, PermissionState.ALLOW,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Force push", 8, PermissionState.DENY,
+              "main-api"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories",
+              "repoV2/proj1/repo-main-api", "Bypass policies", 128, PermissionState.DENY,
+              "main-api"),
+        # Readers on frontend-app repo
+        _perm("vssgp.Uy0xLTktNA", "Readers", "Git Repositories",
+              "repoV2/proj1/repo-frontend", "Read", 2, PermissionState.ALLOW,
+              "frontend-app"),
+        _perm("vssgp.Uy0xLTktNA", "Readers", "Git Repositories",
+              "repoV2/proj1/repo-frontend", "Contribute", 4, PermissionState.DENY,
+              "frontend-app"),
+        # DevOps Team on infra-config repo
+        _perm("vssgp.custom1", "DevOps Team", "Git Repositories",
+              "repoV2/proj1/repo-infra", "Bypass policies", 128, PermissionState.ALLOW,
+              "infra-config"),
+        _perm("vssgp.custom1", "DevOps Team", "Git Repositories",
+              "repoV2/proj1/repo-infra", "Force push", 8, PermissionState.ALLOW,
+              "infra-config"),
+        _perm("vssgp.custom1", "DevOps Team", "Git Repositories",
+              "repoV2/proj1/repo-infra", "Delete repository", 512, PermissionState.ALLOW,
+              "infra-config"),
     ]
     permissions.repos.permissions.extend(repos_perms)
 
-    # Pipeline permissions
+    # ----------------------------------------------------------------
+    # Pipeline (Build) permissions with pipeline names
+    # ----------------------------------------------------------------
     pipeline_perms = [
-        # Build Admins
-        Permission("vssgp.Uy0xLTktNQ", "Build Administrators", "Build", "build1",
-                  "View builds", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNQ", "Build Administrators", "Build", "build1",
-                  "Queue builds", 128, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNQ", "Build Administrators", "Build", "build1",
-                  "Edit build definition", 2048, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNQ", "Build Administrators", "Build", "build1",
-                  "Administer build permissions", 8192, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNQ", "Build Administrators", "Build", "build1",
-                  "Destroy builds", 32, PermissionState.ALLOW),
-        # Contributors
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Build", "build1",
-                  "View builds", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Build", "build1",
-                  "Queue builds", 128, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "Build", "build1",
-                  "Edit build definition", 2048, PermissionState.DENY),
-        # DevOps Team
-        Permission("vssgp.custom1", "DevOps Team", "Build", "build1",
-                  "Edit build definition", 2048, PermissionState.ALLOW),
-        Permission("vssgp.custom1", "DevOps Team", "Build", "build1",
-                  "Delete build definition", 4096, PermissionState.ALLOW),
+        _perm("vssgp.Uy0xLTktNQ", "Build Administrators", "Build",
+              "proj1/ci-main-api", "View builds", 1, PermissionState.ALLOW,
+              "CI - Main API"),
+        _perm("vssgp.Uy0xLTktNQ", "Build Administrators", "Build",
+              "proj1/ci-main-api", "Queue builds", 128, PermissionState.ALLOW,
+              "CI - Main API"),
+        _perm("vssgp.Uy0xLTktNQ", "Build Administrators", "Build",
+              "proj1/ci-main-api", "Edit build definition", 2048, PermissionState.ALLOW,
+              "CI - Main API"),
+        _perm("vssgp.Uy0xLTktNQ", "Build Administrators", "Build",
+              "proj1/ci-main-api", "Administer build permissions", 8192, PermissionState.ALLOW,
+              "CI - Main API"),
+        _perm("vssgp.Uy0xLTktNQ", "Build Administrators", "Build",
+              "proj1/ci-main-api", "Destroy builds", 32, PermissionState.ALLOW,
+              "CI - Main API"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Build",
+              "proj1/ci-main-api", "View builds", 1, PermissionState.ALLOW,
+              "CI - Main API"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Build",
+              "proj1/ci-main-api", "Queue builds", 128, PermissionState.ALLOW,
+              "CI - Main API"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "Build",
+              "proj1/ci-main-api", "Edit build definition", 2048, PermissionState.DENY,
+              "CI - Main API"),
+        _perm("vssgp.custom1", "DevOps Team", "Build",
+              "proj1/cd-infra-deploy", "Edit build definition", 2048, PermissionState.ALLOW,
+              "CD - Infra Deploy"),
+        _perm("vssgp.custom1", "DevOps Team", "Build",
+              "proj1/cd-infra-deploy", "Delete build definition", 4096, PermissionState.ALLOW,
+              "CD - Infra Deploy"),
     ]
     permissions.pipelines.permissions.extend(pipeline_perms)
 
-    # Release permissions
+    # ----------------------------------------------------------------
+    # Release permissions with release pipeline names
+    # ----------------------------------------------------------------
     release_perms = [
-        # Release Admins
-        Permission("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement", "release1",
-                  "View release pipeline", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement", "release1",
-                  "Edit release pipeline", 2, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement", "release1",
-                  "Manage releases", 16, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement", "release1",
-                  "Administer permissions", 512, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement", "release1",
-                  "Delete release pipeline", 4, PermissionState.ALLOW),
-        # Contributors
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "ReleaseManagement", "release1",
-                  "View releases", 32, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "ReleaseManagement", "release1",
-                  "Create releases", 64, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "ReleaseManagement", "release1",
-                  "Edit release pipeline", 2, PermissionState.DENY),
+        _perm("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement",
+              "proj1/release-prod", "View release pipeline", 1, PermissionState.ALLOW,
+              "Release - Production"),
+        _perm("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement",
+              "proj1/release-prod", "Edit release pipeline", 2, PermissionState.ALLOW,
+              "Release - Production"),
+        _perm("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement",
+              "proj1/release-prod", "Manage releases", 16, PermissionState.ALLOW,
+              "Release - Production"),
+        _perm("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement",
+              "proj1/release-prod", "Administer permissions", 512, PermissionState.ALLOW,
+              "Release - Production"),
+        _perm("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement",
+              "proj1/release-prod", "Delete release pipeline", 4, PermissionState.ALLOW,
+              "Release - Production"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "ReleaseManagement",
+              "proj1/release-staging", "View releases", 32, PermissionState.ALLOW,
+              "Release - Staging"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "ReleaseManagement",
+              "proj1/release-staging", "Create releases", 64, PermissionState.ALLOW,
+              "Release - Staging"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "ReleaseManagement",
+              "proj1/release-staging", "Edit release pipeline", 2, PermissionState.DENY,
+              "Release - Staging"),
     ]
     permissions.release.permissions.extend(release_perms)
 
-    # Boards permissions
+    # ----------------------------------------------------------------
+    # Boards (Work Item Tracking) permissions
+    # ----------------------------------------------------------------
     boards_perms = [
-        # Contributors
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking", "wit1",
-                  "View work items", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking", "wit1",
-                  "Edit work items", 2, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking", "wit1",
-                  "Delete work items", 8, PermissionState.DENY),
-        Permission("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking", "wit1",
-                  "Permanently delete", 32, PermissionState.DENY),
-        # Readers
-        Permission("vssgp.Uy0xLTktNA", "Readers", "WorkItemTracking", "wit1",
-                  "View work items", 1, PermissionState.ALLOW),
-        Permission("vssgp.Uy0xLTktNA", "Readers", "WorkItemTracking", "wit1",
-                  "Edit work items", 2, PermissionState.DENY),
-        # QA Team
-        Permission("vssgp.custom2", "QA Team", "WorkItemTracking", "wit1",
-                  "View work items", 1, PermissionState.ALLOW),
-        Permission("vssgp.custom2", "QA Team", "WorkItemTracking", "wit1",
-                  "Edit work items", 2, PermissionState.ALLOW),
-        Permission("vssgp.custom2", "QA Team", "WorkItemTracking", "wit1",
-                  "Create child work items", 4, PermissionState.ALLOW),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking",
+              "proj1/wit-area-root", "View work items", 1, PermissionState.ALLOW,
+              "Area: Root"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking",
+              "proj1/wit-area-root", "Edit work items", 2, PermissionState.ALLOW,
+              "Area: Root"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking",
+              "proj1/wit-area-root", "Delete work items", 8, PermissionState.DENY,
+              "Area: Root"),
+        _perm("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking",
+              "proj1/wit-area-root", "Permanently delete", 32, PermissionState.DENY,
+              "Area: Root"),
+        _perm("vssgp.Uy0xLTktNA", "Readers", "WorkItemTracking",
+              "proj1/wit-area-root", "View work items", 1, PermissionState.ALLOW,
+              "Area: Root"),
+        _perm("vssgp.Uy0xLTktNA", "Readers", "WorkItemTracking",
+              "proj1/wit-area-root", "Edit work items", 2, PermissionState.DENY,
+              "Area: Root"),
+        _perm("vssgp.custom2", "QA Team", "WorkItemTracking",
+              "proj1/wit-area-qa", "View work items", 1, PermissionState.ALLOW,
+              "Area: QA Testing"),
+        _perm("vssgp.custom2", "QA Team", "WorkItemTracking",
+              "proj1/wit-area-qa", "Edit work items", 2, PermissionState.ALLOW,
+              "Area: QA Testing"),
+        _perm("vssgp.custom2", "QA Team", "WorkItemTracking",
+              "proj1/wit-area-qa", "Create child work items", 4, PermissionState.ALLOW,
+              "Area: QA Testing"),
     ]
     permissions.boards.permissions.extend(boards_perms)
 
@@ -539,28 +586,6 @@ def main():
     print(f"  {len(permissions.all_permissions())} Permissions")
     print(f"  {len(gov_report.controls)} Compliance Controls")
     print(f"  {len(gov_report.findings)} Governance Findings")
-    print()
-    print("Excel Sheets:")
-    print("  - Executive Summary (with charts)")
-    print("  - Governance Score (radar + bar charts)")
-    print("  - Compliance Controls (status distribution)")
-    print("  - Risk Findings (sorted by severity)")
-    print("  - Groups Overview (type distribution)")
-    print("  - Group Members")
-    print("  - Users Overview (access level chart)")
-    print("  - Security Namespaces")
-    print("  - Perms - Project/Repos/Pipelines/Release/Boards")
-    print("  - Permission Matrix (heatmap)")
-    print("  - Inheritance Analysis (direct vs inherited)")
-    print("  - Recommendations (prioritized)")
-    print()
-    print("HTML Dashboard Sections:")
-    print("  - Interactive Dashboard with Chart.js")
-    print("  - Governance Scores (radar chart)")
-    print("  - Compliance Controls Table")
-    print("  - Risk Findings Table")
-    print("  - Users & Groups with Charts")
-    print("  - Permissions Analysis")
 
 
 if __name__ == "__main__":

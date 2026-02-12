@@ -82,6 +82,47 @@ class HTMLReportGenerator:
     # Render
     # ------------------------------------------------------------------
 
+    def _perm_state_badge(self, state: PermissionState) -> str:
+        colors = {
+            PermissionState.ALLOW: ("#C6EFCE", "#006100"),
+            PermissionState.DENY: ("#FFC7CE", "#9C0006"),
+            PermissionState.INHERITED_ALLOW: ("#D6E4F0", "#1F4E79"),
+            PermissionState.INHERITED_DENY: ("#FFC7CE", "#9C0006"),
+            PermissionState.NOT_SET: ("#F2F2F2", "#666"),
+        }
+        bg, fg = colors.get(state, ("#F2F2F2", "#666"))
+        label = state.value.replace("_", " ").title()
+        return f'<span class="badge" style="background:{bg};color:{fg}">{label}</span>'
+
+    def _render_permissions_tables(self) -> str:
+        """Render per-service permission tables with resource display names."""
+        html = ""
+        for service in self.permissions.all_services():
+            sp = self.permissions.get_by_service(service)
+            if not sp.permissions:
+                continue
+            rows = ""
+            for p in sp.permissions:
+                badge = self._perm_state_badge(p.state)
+                rows += f"""
+                <tr>
+                    <td>{p.identity_name}</td>
+                    <td>{p.permission_name}</td>
+                    <td>{badge}</td>
+                    <td>{"Yes" if p.is_inherited else "No"}</td>
+                    <td><strong>{p.resource_label}</strong></td>
+                    <td class="desc" style="font-size:11px;color:#999">{p.resource_token}</td>
+                </tr>"""
+            html += f"""
+<div class="table-container">
+    <h3>{service} Permissions ({len(sp.permissions)})</h3>
+    <table>
+        <thead><tr><th>Identity</th><th>Permission</th><th>State</th><th>Inherited</th><th>Resource</th><th>Token</th></tr></thead>
+        <tbody>{rows}</tbody>
+    </table>
+</div>"""
+        return html
+
     def _render(self) -> str:
         g = self.gov
         score = g.score
@@ -390,6 +431,7 @@ tr.inactive td {{ opacity: 0.6; }}
     <div class="chart-box"><h3>Permissions by Service</h3><canvas id="chartPermsByService2"></canvas></div>
     <div class="chart-box"><h3>Permission Distribution</h3><canvas id="chartPermDist2"></canvas></div>
 </div>
+{self._render_permissions_tables()}
 </div>
 
 <script>

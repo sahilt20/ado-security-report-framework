@@ -162,6 +162,27 @@ HIGH_RISK_PERMISSIONS = {
     "Edit policies",
 }
 
+# Permissions that indicate branch-policy bypass capability
+BRANCH_POLICY_BYPASS_PERMS = {
+    "Bypass policies",
+    "Bypass policies on PR",
+    "Force push",
+    "Edit policies",
+}
+
+# Permissions related to pipeline/release destructive actions
+PIPELINE_DESTRUCTIVE_PERMS = {
+    "Delete build definition",
+    "Destroy builds",
+    "Delete release pipeline",
+    "Delete release stage",
+    "Administer build permissions",
+    "Administer permissions",
+}
+
+# Stakeholder-level access names
+STAKEHOLDER_ACCESS = {"Stakeholder", "stakeholder"}
+
 ADMIN_GROUP_KEYWORDS = [
     "administrator",
     "admin",
@@ -226,6 +247,11 @@ class GovernanceAnalyzer:
         self._check_high_risk_permissions(report)
         self._check_permission_inheritance(report)
         self._check_deny_overrides(report)
+        self._check_branch_policy_bypass(report)
+        self._check_pipeline_security(report)
+        self._check_large_groups(report)
+        self._check_license_optimization(report)
+        self._check_broad_contributor_access(report)
 
         # Run compliance controls
         self._run_compliance_controls(report)
@@ -534,6 +560,190 @@ class GovernanceAnalyzer:
                 recommendation="Consider restructuring permissions to use allow-only with least privilege.",
             ))
 
+    def _check_branch_policy_bypass(self, report: GovernanceReport):
+        """Check for identities with branch policy bypass capabilities."""
+        all_perms = self.permissions.all_permissions()
+        bypass_by_identity: Dict[str, List[str]] = defaultdict(list)
+        for p in all_perms:
+            if (p.permission_name in BRANCH_POLICY_BYPASS_PERMS
+                    and p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW)):
+                bypass_by_identity[p.identity_name].append(
+                    f"{p.permission_name} on {p.resource_label}"
+                )
+
+        for identity, bypasses in bypass_by_identity.items():
+            # Default admin groups get a pass (info only), custom groups are concerning
+            group = next(
+                (g for g in self.groups if g.display_name == identity), None
+            )
+            is_custom = group and group.group_type == "Custom"
+
+            if is_custom:
+                report.findings.append(GovernanceFinding(
+                    category="Branch Policy",
+                    title="Custom Group Can Bypass Branch Policies",
+                    description=f"'{identity}' has {len(bypasses)} branch policy bypass permission(s): {', '.join(bypasses[:3])}.",
+                    risk_level=RiskLevel.HIGH,
+                    affected_entity=identity,
+                    entity_type="group",
+                    recommendation="Remove policy bypass from custom groups. Only admins should bypass branch policies.",
+                    details={"bypasses": bypasses},
+                ))
+            elif len(bypasses) > 2:
+                report.findings.append(GovernanceFinding(
+                    category="Branch Policy",
+                    title="Multiple Branch Policy Bypasses",
+                    description=f"'{identity}' has {len(bypasses)} policy bypass permission(s) across resources.",
+                    risk_level=RiskLevel.MEDIUM,
+                    affected_entity=identity,
+                    entity_type="group",
+                    recommendation="Limit bypass permissions to minimum required repositories.",
+                    details={"bypasses": bypasses},
+                ))
+
+    def _check_pipeline_security(self, report: GovernanceReport):
+        """Check for pipeline/release destructive permission issues."""
+        all_perms = self.permissions.all_permissions()
+        destructive_by_identity: Dict[str, List[str]] = defaultdict(list)
+        for p in all_perms:
+            if (p.permission_name in PIPELINE_DESTRUCTIVE_PERMS
+                    and p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW)):
+                destructive_by_identity[p.identity_name].append(
+                    f"{p.permission_name} on {p.resource_label}"
+                )
+
+        for identity, perms in destructive_by_identity.items():
+            group = next(
+                (g for g in self.groups if g.display_name == identity), None
+            )
+            is_custom = group and group.group_type == "Custom"
+
+            if is_custom and len(perms) >= 2:
+                report.findings.append(GovernanceFinding(
+                    category="Pipeline Security",
+                    title="Custom Group with Destructive Pipeline Permissions",
+                    description=f"'{identity}' has {len(perms)} destructive pipeline permission(s): {', '.join(perms[:3])}.",
+                    risk_level=RiskLevel.HIGH,
+                    affected_entity=identity,
+                    entity_type="group",
+                    recommendation="Restrict destructive pipeline permissions to build/release admins only.",
+                    details={"permissions": perms},
+                ))
+            elif len(perms) >= 3:
+                report.findings.append(GovernanceFinding(
+                    category="Pipeline Security",
+                    title="Broad Destructive Pipeline Access",
+                    description=f"'{identity}' has {len(perms)} destructive pipeline permission(s).",
+                    risk_level=RiskLevel.MEDIUM,
+                    affected_entity=identity,
+                    entity_type="group",
+                    recommendation="Review if all destructive permissions are necessary.",
+                    details={"permissions": perms},
+                ))
+
+    def _check_large_groups(self, report: GovernanceReport):
+        """Flag unusually large security groups that may indicate over-broad access."""
+        for group in self.groups:
+            member_count = group.member_count or len(group.members)
+            if member_count > 20:
+                report.findings.append(GovernanceFinding(
+                    category="Access Control",
+                    title="Excessively Large Security Group",
+                    description=f"Group '{group.display_name}' has {member_count} members. "
+                                "Large groups increase the blast radius of permissions.",
+                    risk_level=RiskLevel.MEDIUM,
+                    affected_entity=group.display_name,
+                    entity_type="group",
+                    recommendation="Break large groups into smaller, role-specific groups with least privilege.",
+                    details={"member_count": member_count},
+                ))
+            elif member_count > 10:
+                report.findings.append(GovernanceFinding(
+                    category="Access Control",
+                    title="Large Security Group",
+                    description=f"Group '{group.display_name}' has {member_count} members.",
+                    risk_level=RiskLevel.LOW,
+                    affected_entity=group.display_name,
+                    entity_type="group",
+                    recommendation="Consider reviewing if all members need the same access level.",
+                    details={"member_count": member_count},
+                ))
+
+    def _check_license_optimization(self, report: GovernanceReport):
+        """Check for license optimization opportunities."""
+        stakeholder_with_contrib = []
+        premium_inactive = []
+
+        for user in self.users:
+            access = user.access_level or ""
+            user_groups = self._user_groups.get(user.descriptor, set())
+            group_names = set()
+            for gd in user_groups:
+                g = self._groups_by_descriptor.get(gd)
+                if g:
+                    group_names.add(g.display_name.lower())
+
+            # Stakeholder users in contributor-level groups
+            if access in STAKEHOLDER_ACCESS:
+                if any("contributor" in gn for gn in group_names):
+                    stakeholder_with_contrib.append(user.display_name)
+
+            # Premium licenses on inactive users
+            if not user.is_active and access in (
+                "Visual Studio Enterprise", "Visual Studio Professional",
+                "Basic + Test Plans",
+            ):
+                premium_inactive.append(f"{user.display_name} ({access})")
+
+        if stakeholder_with_contrib:
+            report.findings.append(GovernanceFinding(
+                category="License Optimization",
+                title="Stakeholder Users in Contributor Groups",
+                description=f"{len(stakeholder_with_contrib)} stakeholder user(s) are in contributor groups: "
+                            f"{', '.join(stakeholder_with_contrib[:5])}. They may need upgraded licenses.",
+                risk_level=RiskLevel.LOW,
+                affected_entity=f"{len(stakeholder_with_contrib)} users",
+                entity_type="user",
+                recommendation="Review if stakeholder users need contributor access; upgrade or remove.",
+            ))
+
+        if premium_inactive:
+            report.findings.append(GovernanceFinding(
+                category="License Optimization",
+                title="Premium Licenses on Inactive Users",
+                description=f"{len(premium_inactive)} inactive user(s) hold premium licenses: "
+                            f"{', '.join(premium_inactive[:5])}.",
+                risk_level=RiskLevel.MEDIUM,
+                affected_entity=f"{len(premium_inactive)} users",
+                entity_type="user",
+                recommendation="Reclaim premium licenses from inactive users to reduce costs.",
+            ))
+
+    def _check_broad_contributor_access(self, report: GovernanceReport):
+        """Check if contributors have write access across too many resources."""
+        all_perms = self.permissions.all_permissions()
+        # Group permissions by identity -> set of unique resources with write/contribute
+        write_resources_by_identity: Dict[str, set] = defaultdict(set)
+        for p in all_perms:
+            if p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW):
+                if any(kw in p.permission_name.lower() for kw in
+                       ("contribute", "write", "edit", "create", "queue")):
+                    write_resources_by_identity[p.identity_name].add(p.resource_label)
+
+        for identity, resources in write_resources_by_identity.items():
+            if len(resources) >= 6:
+                report.findings.append(GovernanceFinding(
+                    category="Least Privilege",
+                    title="Broad Write Access Across Resources",
+                    description=f"'{identity}' has write/contribute access to {len(resources)} resources: "
+                                f"{', '.join(list(resources)[:4])}...",
+                    risk_level=RiskLevel.MEDIUM,
+                    affected_entity=identity,
+                    entity_type="group",
+                    recommendation="Restrict write access to only necessary resources per team.",
+                    details={"resource_count": len(resources), "resources": list(resources)},
+                ))
+
     # ------------------------------------------------------------------
     # Compliance Controls
     # ------------------------------------------------------------------
@@ -548,6 +758,9 @@ class GovernanceAnalyzer:
             self._ctrl_group_hygiene(report),
             self._ctrl_separation_of_duties(report),
             self._ctrl_high_risk_permissions(report),
+            self._ctrl_branch_policy(report),
+            self._ctrl_pipeline_security(report),
+            self._ctrl_license_optimization(report),
         ]
         report.controls = controls
 
@@ -691,6 +904,66 @@ class GovernanceAnalyzer:
             ctrl.score = 30
         return ctrl
 
+    def _ctrl_branch_policy(self, report: GovernanceReport) -> ComplianceControl:
+        ctrl = ComplianceControl(
+            control_id="GOV-008",
+            control_name="Branch Policy Enforcement",
+            category="Branch Policy",
+            description="Branch policy bypasses should be limited to admins only.",
+        )
+        bp_findings = [f for f in report.findings if f.category == "Branch Policy"]
+        high_bp = [f for f in bp_findings if f.risk_level in (RiskLevel.CRITICAL, RiskLevel.HIGH)]
+        if not bp_findings:
+            ctrl.status = "Pass"
+            ctrl.score = 100
+        elif not high_bp:
+            ctrl.status = "Warning"
+            ctrl.score = 70
+        else:
+            ctrl.status = "Fail"
+            ctrl.score = 30
+        return ctrl
+
+    def _ctrl_pipeline_security(self, report: GovernanceReport) -> ComplianceControl:
+        ctrl = ComplianceControl(
+            control_id="GOV-009",
+            control_name="Pipeline Security Controls",
+            category="Pipeline Security",
+            description="Destructive pipeline permissions should be tightly controlled.",
+        )
+        ps_findings = [f for f in report.findings if f.category == "Pipeline Security"]
+        high_ps = [f for f in ps_findings if f.risk_level in (RiskLevel.CRITICAL, RiskLevel.HIGH)]
+        if not ps_findings:
+            ctrl.status = "Pass"
+            ctrl.score = 100
+        elif not high_ps:
+            ctrl.status = "Warning"
+            ctrl.score = 65
+        else:
+            ctrl.status = "Fail"
+            ctrl.score = 30
+        return ctrl
+
+    def _ctrl_license_optimization(self, report: GovernanceReport) -> ComplianceControl:
+        ctrl = ComplianceControl(
+            control_id="GOV-010",
+            control_name="License Optimization",
+            category="License Optimization",
+            description="Licenses should be assigned efficiently with no waste on inactive users.",
+        )
+        lic_findings = [f for f in report.findings if f.category == "License Optimization"]
+        premium_waste = [f for f in lic_findings if "Premium Licenses" in f.title]
+        if not lic_findings:
+            ctrl.status = "Pass"
+            ctrl.score = 100
+        elif not premium_waste:
+            ctrl.status = "Warning"
+            ctrl.score = 75
+        else:
+            ctrl.status = "Fail"
+            ctrl.score = 40
+        return ctrl
+
     # ------------------------------------------------------------------
     # Scoring
     # ------------------------------------------------------------------
@@ -707,8 +980,11 @@ class GovernanceAnalyzer:
         def avg(lst):
             return sum(lst) / len(lst) if lst else 100.0
 
-        score.access_control_score = avg(cat_scores.get("Access Control", [100]))
-        score.least_privilege_score = avg(cat_scores.get("Least Privilege", [100]))
+        # Merge related categories into the five governance dimensions
+        ac_cats = cat_scores.get("Access Control", [100]) + cat_scores.get("Branch Policy", [])
+        lp_cats = cat_scores.get("Least Privilege", [100]) + cat_scores.get("Pipeline Security", []) + cat_scores.get("License Optimization", [])
+        score.access_control_score = avg(ac_cats)
+        score.least_privilege_score = avg(lp_cats)
         score.separation_of_duties_score = avg(cat_scores.get("Separation of Duties", [100]))
         score.lifecycle_management_score = avg(cat_scores.get("Lifecycle Management", [100]))
 
