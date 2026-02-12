@@ -167,6 +167,7 @@ class ExcelReportGenerator:
         self.wb.remove(self.wb.active)
 
         self._create_executive_summary()
+        self._create_scoring_methodology()
         self._create_governance_score()
         self._create_compliance_controls()
         self._create_risk_findings()
@@ -358,6 +359,254 @@ class ExcelReportGenerator:
         ws.column_dimensions["A"].width = 22
         ws.column_dimensions["B"].width = 18
         ws.column_dimensions["C"].width = 18
+
+    # ---- Sheet: Scoring Methodology ----
+
+    def _create_scoring_methodology(self):
+        ws = self.wb.create_sheet("Scoring Methodology")
+        ws.sheet_properties.tabColor = "5B9BD5"
+        gr = self.gov
+
+        self._write_title(ws, 1, 1, "Scoring Methodology & Grading Logic", 18)
+        ws.merge_cells("A1:H1")
+        ws.cell(row=2, column=1,
+            value="How the governance grade is calculated, what each dimension measures, and how control scores work."
+        ).font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY, italic=True)
+        ws.merge_cells("A2:H2")
+
+        # ----- Section 1: Grade Scale -----
+        row = 4
+        ws.cell(row=row, column=1, value="GRADE SCALE").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row, ["Grade", "Score Range", "Description"],
+                            widths=[10, 16, 55])
+        grade_rows = [
+            ("A", "90 - 100", "Excellent. Project follows security best practices with minimal findings."),
+            ("B", "80 - 89", "Good. Minor improvements recommended; no critical or high-risk issues."),
+            ("C", "70 - 79", "Fair. Several governance gaps identified that should be addressed."),
+            ("D", "60 - 69", "Poor. Significant issues present; immediate remediation recommended."),
+            ("F", "0 - 59", "Failing. Critical governance deficiencies; urgent action required."),
+        ]
+        grade_colors = {
+            "A": Colors.GRADE_A, "B": Colors.GRADE_B,
+            "C": Colors.GRADE_C, "D": Colors.GRADE_D, "F": Colors.GRADE_F,
+        }
+        for g_letter, g_range, g_desc in grade_rows:
+            row += 1
+            c = ws.cell(row=row, column=1, value=g_letter)
+            c.font = Font(name="Calibri", size=14, bold=True, color=grade_colors.get(g_letter, Colors.PRIMARY))
+            c.alignment = _center()
+            ws.cell(row=row, column=2, value=g_range).alignment = _center()
+            ws.cell(row=row, column=3, value=g_desc)
+
+        # ----- Section 2: Overall Score Formula -----
+        row += 2
+        ws.cell(row=row, column=1, value="OVERALL SCORE FORMULA").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+        row += 1
+        ws.cell(row=row, column=1,
+            value="Overall Score  =  (Access Control x 25%)  +  (Least Privilege x 25%)  +  (Separation of Duties x 15%)  +  (Audit & Compliance x 20%)  +  (Lifecycle Management x 15%)"
+        ).font = Font(name="Calibri", size=10, bold=True)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+
+        # ----- Section 3: Governance Dimensions -----
+        row += 2
+        ws.cell(row=row, column=1, value="GOVERNANCE DIMENSIONS").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row, ["Dimension", "Weight", "Measures", "Source Controls", "Your Score"],
+                            widths=[24, 10, 55, 32, 14])
+
+        dimensions = [
+            (
+                "Access Control", "25%",
+                "Admin user count, external user access, empty groups, branch policy bypasses, large groups",
+                "GOV-001, GOV-004, GOV-005, GOV-008",
+                f"{gr.score.access_control_score:.1f}",
+            ),
+            (
+                "Least Privilege", "25%",
+                "Overprivileged users, high-risk permissions on custom groups, pipeline destructive perms, license waste, broad contributor access",
+                "GOV-002, GOV-007, GOV-009, GOV-010",
+                f"{gr.score.least_privilege_score:.1f}",
+            ),
+            (
+                "Separation of Duties", "15%",
+                "Users with combined Build + Release admin, admins with multiple critical roles",
+                "GOV-006",
+                f"{gr.score.separation_of_duties_score:.1f}",
+            ),
+            (
+                "Audit & Compliance", "20%",
+                "Total finding density (Critical: -15 pts each, High: -8 pts each, Medium/Low: -2 pts each)",
+                "Finding density formula",
+                f"{gr.score.audit_compliance_score:.1f}",
+            ),
+            (
+                "Lifecycle Management", "15%",
+                "Stale/inactive accounts still having project access",
+                "GOV-003",
+                f"{gr.score.lifecycle_management_score:.1f}",
+            ),
+        ]
+        for dim_name, weight, measures, source, score_val in dimensions:
+            row += 1
+            ws.cell(row=row, column=1, value=dim_name).font = Font(name="Calibri", bold=True)
+            ws.cell(row=row, column=2, value=weight).alignment = _center()
+            ws.cell(row=row, column=3, value=measures)
+            ws.cell(row=row, column=4, value=source)
+            sc = ws.cell(row=row, column=5, value=float(score_val))
+            sc.alignment = _center()
+            sc.number_format = "0.0"
+            if float(score_val) >= 80:
+                sc.font = Font(color=Colors.ALLOW_TEXT, bold=True)
+            elif float(score_val) >= 60:
+                sc.font = Font(color=Colors.MEDIUM, bold=True)
+            else:
+                sc.font = Font(color=Colors.DENY_TEXT, bold=True)
+
+        # ----- Section 4: Compliance Controls Detail -----
+        row += 2
+        ws.cell(row=row, column=1, value="COMPLIANCE CONTROL SCORING").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row,
+            ["Control ID", "Control Name", "Category", "Pass Criteria (Score 100)", "Warning Criteria", "Fail Criteria", "Your Status", "Your Score"],
+            widths=[12, 30, 20, 38, 38, 38, 14, 12])
+
+        control_criteria = [
+            ("GOV-001", "Administrative Access Control", "Access Control",
+             "Admin users <= 3", "Admin users 4-5 (score 60)", "Admin users > 5 (score 20)"),
+            ("GOV-002", "Least Privilege Enforcement", "Least Privilege",
+             "0 overprivileged users", "1-2 overprivileged (score 60)", "> 2 overprivileged (score 30)"),
+            ("GOV-003", "Stale Account Management", "Lifecycle Mgmt",
+             "0 stale accounts", "1-2 stale (score 60)", "> 2 stale (score 30)"),
+            ("GOV-004", "External User Access Control", "Access Control",
+             "0 external users", "1-3 external (score 50-70)", "External user has admin (score 0)"),
+            ("GOV-005", "Security Group Hygiene", "Access Control",
+             "0 empty groups", "1-2 empty groups (score 70)", "> 2 empty groups (score 40)"),
+            ("GOV-006", "Separation of Duties", "Separation of Duties",
+             "No SoD findings", "Non-critical SoD findings (score 70)", "Critical/High SoD (score 30)"),
+            ("GOV-007", "High-Risk Permission Control", "Least Privilege",
+             "No high-risk findings", "1-3 high-risk findings (score 60)", "> 3 high-risk findings (score 30)"),
+            ("GOV-008", "Branch Policy Enforcement", "Branch Policy",
+             "No bypass findings", "Low/Med bypass findings (score 70)", "Custom groups bypass policies (score 30)"),
+            ("GOV-009", "Pipeline Security Controls", "Pipeline Security",
+             "No destructive findings", "Low/Med destructive findings (score 65)", "Custom groups have destructive perms (score 30)"),
+            ("GOV-010", "License Optimization", "License Optimization",
+             "No license findings", "Stakeholder mismatches (score 75)", "Premium licenses on inactive users (score 40)"),
+        ]
+
+        # Map control IDs to actual results
+        ctrl_by_id = {c.control_id: c for c in gr.controls}
+        for cid, cname, ccat, pass_c, warn_c, fail_c in control_criteria:
+            row += 1
+            ws.cell(row=row, column=1, value=cid).font = Font(name="Calibri", bold=True)
+            ws.cell(row=row, column=2, value=cname)
+            ws.cell(row=row, column=3, value=ccat)
+            ws.cell(row=row, column=4, value=pass_c)
+            ws.cell(row=row, column=5, value=warn_c)
+            ws.cell(row=row, column=6, value=fail_c)
+            ctrl = ctrl_by_id.get(cid)
+            if ctrl:
+                sc = ws.cell(row=row, column=7, value=ctrl.status)
+                sc.alignment = _center()
+                if ctrl.status in STATUS_FILLS:
+                    sc.fill = STATUS_FILLS[ctrl.status]
+                sv = ws.cell(row=row, column=8, value=ctrl.score)
+                sv.alignment = _center()
+                sv.number_format = "0"
+            else:
+                ws.cell(row=row, column=7, value="N/A").alignment = _center()
+                ws.cell(row=row, column=8, value="-").alignment = _center()
+
+        # ----- Section 5: Audit & Compliance Scoring -----
+        row += 2
+        ws.cell(row=row, column=1, value="AUDIT & COMPLIANCE SCORING").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        ws.cell(row=row, column=1,
+            value="Audit & Compliance is calculated from finding density rather than specific controls:"
+        ).font = Font(name="Calibri", size=10, italic=True)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        row += 1
+        self._write_headers(ws, row, ["Finding Severity", "Point Deduction Per Finding", "Your Count", "Points Lost"],
+                            widths=[22, 30, 14, 14])
+        crit_count = len(gr.critical_findings)
+        high_count = len(gr.high_findings)
+        other_count = len(gr.findings) - crit_count - high_count
+        audit_data = [
+            ("Critical", 15, crit_count),
+            ("High", 8, high_count),
+            ("Medium / Low / Info", 2, other_count),
+        ]
+        total_lost = 0
+        for sev, deduction, count in audit_data:
+            row += 1
+            ws.cell(row=row, column=1, value=sev).font = Font(name="Calibri", bold=True)
+            ws.cell(row=row, column=2, value=f"-{deduction} points per finding").alignment = _center()
+            ws.cell(row=row, column=3, value=count).alignment = _center()
+            lost = deduction * count
+            total_lost += lost
+            ws.cell(row=row, column=4, value=lost).alignment = _center()
+        row += 1
+        ws.cell(row=row, column=1, value="TOTAL").font = Font(name="Calibri", bold=True)
+        ws.cell(row=row, column=2, value=f"Base: 100 - {total_lost} = {max(0, 100 - total_lost)}").font = Font(bold=True)
+        ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
+        sv = ws.cell(row=row, column=4, value=gr.score.audit_compliance_score)
+        sv.alignment = _center()
+        sv.font = Font(name="Calibri", bold=True, size=12)
+        sv.number_format = "0.0"
+
+        # ----- Section 6: Risk Level Definitions -----
+        row += 2
+        ws.cell(row=row, column=1, value="RISK LEVEL DEFINITIONS").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row, ["Risk Level", "Description", "Example"],
+                            widths=[14, 50, 50])
+        risk_defs = [
+            ("Critical", "Immediate security threat; exploitable with high business impact.", "External user has Project Administrator role"),
+            ("High", "Significant governance gap that should be fixed within days.", "Custom group can bypass branch policies; user in both Build + Release admin"),
+            ("Medium", "Moderate issue that should be addressed in the next sprint.", "Broad write access across 6+ resources; premium license on inactive user"),
+            ("Low", "Minor improvement opportunity; address during regular reviews.", "Stakeholder users in contributor groups; groups with 10-20 members"),
+            ("Info", "Informational only; no action required unless relevant.", "Permission inheritance observations"),
+        ]
+        for rlevel, rdesc, rexample in risk_defs:
+            row += 1
+            c = ws.cell(row=row, column=1, value=rlevel)
+            c.alignment = _center()
+            c.font = Font(name="Calibri", bold=True, color="FFFFFF")
+            if rlevel in SEVERITY_FILLS:
+                c.fill = SEVERITY_FILLS[rlevel]
+            ws.cell(row=row, column=2, value=rdesc)
+            ws.cell(row=row, column=3, value=rexample).font = Font(name="Calibri", italic=True, color=Colors.DARK_GRAY)
+
+        # ----- Section 7: Permission State Legend -----
+        row += 2
+        ws.cell(row=row, column=1, value="PERMISSION STATE LEGEND").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row, ["State", "Meaning"],
+                            widths=[20, 60])
+        state_defs = [
+            ("Allow", "Explicitly granted at this scope."),
+            ("Deny", "Explicitly denied at this scope (overrides allow)."),
+            ("Inherited Allow", "Granted via parent group or higher scope."),
+            ("Inherited Deny", "Denied via parent group or higher scope."),
+            ("Not Set", "No explicit grant or denial; effectively no access unless inherited."),
+        ]
+        for sname, smeaning in state_defs:
+            row += 1
+            st_enum = {
+                "Allow": PermissionState.ALLOW,
+                "Deny": PermissionState.DENY,
+                "Inherited Allow": PermissionState.INHERITED_ALLOW,
+                "Inherited Deny": PermissionState.INHERITED_DENY,
+                "Not Set": PermissionState.NOT_SET,
+            }.get(sname)
+            c = ws.cell(row=row, column=1, value=sname)
+            c.alignment = _center()
+            if st_enum in PERM_STATE_FILLS:
+                c.fill = PERM_STATE_FILLS[st_enum]
+            if st_enum in PERM_STATE_FONTS:
+                c.font = PERM_STATE_FONTS[st_enum]
+            ws.cell(row=row, column=2, value=smeaning)
 
     # ---- Sheet 2: Governance Score ----
 
