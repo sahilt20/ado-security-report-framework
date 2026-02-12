@@ -243,7 +243,7 @@ class HTMLReportGenerator:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Azure DevOps Data Governance Report - {self.organization}/{self.project}</title>
+<title>Azure DevOps Project-Level Data Governance Report - {self.organization}/{self.project}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -287,8 +287,8 @@ tr.inactive td {{ opacity: 0.6; }}
 </head>
 <body>
 <div class="header">
-    <h1>Azure DevOps Data Governance Report</h1>
-    <p>Organization: {self.organization} &bull; Project: {self.project} &bull; Generated: {g.generated_at.strftime('%Y-%m-%d %H:%M')}</p>
+    <h1>Azure DevOps Project-Level Data Governance Report</h1>
+    <p>Organization: {self.organization} &bull; Project: {self.project} &bull; Scope: Project Admin &bull; Generated: {g.generated_at.strftime('%Y-%m-%d %H:%M')}</p>
 </div>
 
 <div class="container">

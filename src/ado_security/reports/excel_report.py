@@ -233,10 +233,10 @@ class ExcelReportGenerator:
         ws.sheet_properties.tabColor = Colors.PRIMARY
         gr = self.gov
 
-        self._write_title(ws, 1, 1, "Azure DevOps Data Governance Report", 20)
+        self._write_title(ws, 1, 1, "Azure DevOps Project-Level Data Governance Report", 20)
         ws.merge_cells("A1:J1")
         sub = ws.cell(row=2, column=1,
-            value=f"Organization: {self.organization}  |  Project: {self.project}  |  Generated: {gr.generated_at.strftime('%Y-%m-%d %H:%M')}")
+            value=f"Organization: {self.organization}  |  Project: {self.project}  |  Scope: Project Admin  |  Generated: {gr.generated_at.strftime('%Y-%m-%d %H:%M')}")
         sub.font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY)
         ws.merge_cells("A2:J2")
 

@@ -1,15 +1,29 @@
-# Azure DevOps Data Governance Report Framework
+# Azure DevOps Project-Level Data Governance Report Framework
 
-A production-ready Python framework for generating comprehensive **data governance reports** for Azure DevOps projects. Provides risk scoring, compliance controls, visual charts, permission heatmaps, and actionable recommendations.
+A production-ready Python framework for generating comprehensive **data governance reports** scoped to a single Azure DevOps project. Requires only **Project Administrator** access (no organization-level admin needed).
+
+Provides risk scoring, compliance controls, visual charts, permission heatmaps, and actionable recommendations.
+
+## Access Scope
+
+This framework is designed for **Project-level Administrators**:
+- Collects users via project Teams API (not org-wide entitlements)
+- Collects groups via project-scoped Graph API (not org-wide groups)
+- Collects permissions via project-scoped ACL tokens
+- Does NOT require `vso.entitlements` (org-level) scope
+- PAT only needs project-level read permissions
 
 ## Features
 
 - **Data Governance Analysis**: Risk scoring, compliance controls, policy violation detection
 - **Governance Scoring**: Overall score (A-F grade) across 5 governance dimensions
-- **Compliance Controls**: 7 automated compliance checks with Pass/Warning/Fail status
+- **Compliance Controls**: 10 automated compliance checks with Pass/Warning/Fail status
 - **Risk Findings**: Categorized findings with Critical/High/Medium/Low severity
 - **Permission Matrix**: Visual user-permission heatmap with conditional formatting
 - **Inheritance Tracking**: Direct vs inherited permissions with conflict detection
+- **Branch Policy Checks**: Detects policy bypass permissions on non-admin groups
+- **Pipeline Security**: Flags destructive pipeline permissions
+- **License Optimization**: Identifies wasted premium licenses on inactive users
 - **Visual Charts**: Bar, pie, radar, and stacked charts in Excel; interactive Chart.js in HTML
 - **Dual Output**: Professional Excel workbook (12+ sheets) AND interactive HTML dashboard
 - **Separation of Duties**: Detects combined admin roles and overprivileged accounts
@@ -70,11 +84,14 @@ options:
 
 ## PAT Permissions Required
 
-Your Personal Access Token needs the following scopes:
-- `vso.graph` - Read graph information
-- `vso.security_manage` - Read security information
-- `vso.project` - Read project information
-- `vso.identity` - Read identity information
+Your Personal Access Token needs the following **project-level** scopes:
+- `vso.graph` - Read graph information (project-scoped groups and users)
+- `vso.security_manage` - Read security information (project ACLs)
+- `vso.project` - Read project information (teams, members)
+- `vso.identity` - Read identity information (resolve descriptors)
+
+**Note**: Organization-level scopes like `vso.entitlements` are NOT required.
+The framework automatically uses project-scoped APIs accessible to Project Administrators.
 
 ## Governance Dimensions
 
@@ -97,6 +114,9 @@ Your Personal Access Token needs the following scopes:
 | GOV-005 | Security Group Hygiene | Groups have members and clear purpose |
 | GOV-006 | Separation of Duties | Critical roles separated across users |
 | GOV-007 | High-Risk Permission Control | High-risk permissions tightly controlled |
+| GOV-008 | Branch Policy Enforcement | Branch policy bypasses limited to admins |
+| GOV-009 | Pipeline Security Controls | Destructive pipeline permissions controlled |
+| GOV-010 | License Optimization | No wasted premium licenses on inactive users |
 
 ## Excel Report Sheets
 

@@ -1,8 +1,9 @@
 """
-Groups and Membership collector.
+Groups and Membership collector (project-scoped).
 
-Collects all security groups and their members at the project level,
-including nested group relationships.
+Collects security groups and their members at the project level only.
+Does NOT fall back to organization-wide group enumeration, as that
+requires org-level admin permissions.
 """
 
 import logging
@@ -18,9 +19,10 @@ logger = logging.getLogger(__name__)
 class GroupsCollector:
     """
     Collects security groups and memberships from Azure DevOps.
-    
-    Uses the Graph API to enumerate all groups and their members
-    within a project scope.
+
+    Uses the Graph API with project scope descriptor to enumerate
+    only project-level groups and their members. Does not require
+    organization-level admin access.
     """
     
     def __init__(self, client: AzureDevOpsClient):
@@ -46,14 +48,17 @@ class GroupsCollector:
         """
         logger.info(f"Collecting security groups for project: {self.client.project}")
         
-        # Get project scope descriptor
+        # Get project scope descriptor (project-level only)
         scope_descriptor = self.client.get_project_descriptor()
-        
+
         if not scope_descriptor:
-            logger.warning("Could not get project scope descriptor, collecting org-wide groups")
-            groups = self._collect_all_groups()
-        else:
-            groups = self._collect_project_groups(scope_descriptor)
+            logger.warning(
+                "Could not get project scope descriptor. "
+                "Ensure your PAT has 'Graph (read)' scope for the project."
+            )
+            return []
+
+        groups = self._collect_project_groups(scope_descriptor)
         
         # Collect members for each group
         if include_members:
@@ -81,20 +86,8 @@ class GroupsCollector:
                 self._groups_cache[group.descriptor] = group
         except Exception as e:
             logger.warning(f"Error collecting project groups: {e}")
-            # Fallback to all groups
-            return self._collect_all_groups()
-        
-        return groups
-    
-    def _collect_all_groups(self) -> List[SecurityGroup]:
-        """Collect all groups in the organization."""
-        groups = []
-        
-        for group_data in self.client.vssps_get_paginated("_apis/graph/groups"):
-            group = self._parse_group(group_data)
-            groups.append(group)
-            self._groups_cache[group.descriptor] = group
-        
+            return []
+
         return groups
     
     def _collect_group_members(self, group: SecurityGroup):

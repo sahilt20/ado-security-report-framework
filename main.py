@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Azure DevOps Data Governance Report Framework - CLI Entry Point.
+Azure DevOps Project-Level Data Governance Report Framework - CLI Entry Point.
 
-Generates comprehensive data governance reports for Azure DevOps projects
-including security analysis, compliance controls, risk scoring, and
-visual dashboards.
+Generates comprehensive data governance reports scoped to a single
+Azure DevOps project. Requires Project Administrator access only
+(does NOT require organization-level admin).
 
 Usage:
     python main.py --org "myorg" --project "myproject" --pat $PAT
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Generate Azure DevOps Data Governance reports",
+        description="Generate Azure DevOps project-level Data Governance reports (Project Admin scope)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -138,7 +138,8 @@ def main():
             pat=args.pat,
         )
 
-        logger.info(f"Starting data governance report for {config.organization}/{config.project}")
+        logger.info(f"Starting project-level data governance report for {config.organization}/{config.project}")
+        logger.info("Scope: Project Administrator (no org-level access required)")
 
         # Create API client
         client = AzureDevOpsClient(config)
@@ -268,8 +269,8 @@ def main():
             logger.info(f"{fmt} Report: {path}")
         logger.info("=" * 60)
 
-        print(f"\nData Governance Report Generated Successfully!")
-        print(f"Organization: {config.organization} | Project: {config.project}")
+        print(f"\nProject-Level Data Governance Report Generated Successfully!")
+        print(f"Organization: {config.organization} | Project: {config.project} | Scope: Project Admin")
         print(f"\nGenerated Reports:")
         for fmt, path in generated_files:
             print(f"  {fmt}: {path}")

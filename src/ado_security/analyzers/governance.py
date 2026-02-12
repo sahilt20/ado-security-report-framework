@@ -1,8 +1,9 @@
 """
-Azure DevOps Data Governance Analyzer.
+Azure DevOps Project-Level Data Governance Analyzer.
 
 Provides risk scoring, compliance assessment, policy violation detection,
-and governance metrics for Azure DevOps security posture.
+and governance metrics scoped to a single Azure DevOps project.
+Designed for project-level admins (does not require org-level access).
 """
 
 import logging
@@ -184,23 +185,29 @@ PIPELINE_DESTRUCTIVE_PERMS = {
 STAKEHOLDER_ACCESS = {"Stakeholder", "stakeholder"}
 
 ADMIN_GROUP_KEYWORDS = [
-    "administrator",
-    "admin",
-    "project collection",
+    "project administrator",
+    "build administrator",
+    "release administrator",
 ]
 
 
 class GovernanceAnalyzer:
     """
-    Analyzes Azure DevOps data governance posture.
+    Analyzes Azure DevOps project-level data governance posture.
+
+    Scoped to project-level permissions accessible to Project Administrators.
+    Does NOT require organization-level admin access.
 
     Performs:
-    - Risk scoring per user, group, and service
-    - Compliance control checks
+    - Risk scoring per user, group, and service within the project
+    - Compliance control checks (10 controls)
     - Policy violation detection
     - Least privilege analysis
+    - Branch policy bypass detection
+    - Pipeline security checks
     - Stale account detection
     - Separation of duties checks
+    - License optimization analysis
     """
 
     def __init__(

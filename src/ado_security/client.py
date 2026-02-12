@@ -26,11 +26,13 @@ logger = logging.getLogger(__name__)
 class AzureDevOpsClient:
     """
     Azure DevOps REST API client.
-    
+
+    Scoped for project-level admin access.
+
     Supports multiple API domains:
-    - dev.azure.com - Core APIs
-    - vssps.dev.azure.com - Graph/Identity APIs
-    - vsaex.dev.azure.com - User Entitlements APIs
+    - dev.azure.com - Core APIs (project-scoped)
+    - vssps.dev.azure.com - Graph/Identity APIs (project-scoped via descriptor)
+    - vsaex.dev.azure.com - User Entitlements APIs (org-level, optional fallback)
     """
     
     API_VERSION = "7.1-preview.1"
@@ -295,13 +297,44 @@ class AzureDevOpsClient:
         self._project_descriptor = response.get("value", "")
         return self._project_descriptor
     
+    def get_project_teams(self) -> List[Dict[str, Any]]:
+        """
+        Get all teams within the project.
+
+        Uses the project-scoped Teams API, accessible to project admins.
+
+        Returns:
+            List of team objects.
+        """
+        response = self.core_get(
+            f"_apis/projects/{self.project}/teams",
+            api_version="7.1-preview.3",
+        )
+        return response.get("value", [])
+
+    def get_team_members(self, team_id: str) -> List[Dict[str, Any]]:
+        """
+        Get members of a specific team.
+
+        Args:
+            team_id: Team ID or name.
+
+        Returns:
+            List of team member objects.
+        """
+        response = self.core_get(
+            f"_apis/projects/{self.project}/teams/{team_id}/members",
+            api_version="7.1-preview.2",
+        )
+        return response.get("value", [])
+
     def validate_connection(self) -> bool:
         """
         Validate the connection to Azure DevOps.
-        
+
         Returns:
             True if connection is valid
-            
+
         Raises:
             Exception with details if connection fails
         """

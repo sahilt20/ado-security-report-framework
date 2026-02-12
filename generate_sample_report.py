@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Generate sample Data Governance report with dummy data.
+Generate sample Project-Level Data Governance report with dummy data.
 
-Demonstrates the full governance reporting pipeline including:
+Demonstrates the full governance reporting pipeline scoped to
+project-level admin permissions, including:
 - Excel report with charts and heatmaps
 - HTML interactive dashboard
 - Governance scoring and compliance controls
@@ -509,7 +510,8 @@ def generate_dummy_permissions(groups, users):
 
 
 def main():
-    print("Generating Azure DevOps Data Governance sample reports...")
+    print("Generating Azure DevOps Project-Level Data Governance sample reports...")
+    print("Scope: Project Administrator (no org-level access required)")
     print()
 
     # Generate dummy data

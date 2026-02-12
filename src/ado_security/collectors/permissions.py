@@ -1,8 +1,9 @@
 """
-Permissions and ACL collector.
+Permissions and ACL collector (project-scoped).
 
-Collects Access Control Lists and entries for all security namespaces,
-with granular permission details organized by Azure DevOps service areas.
+Collects Access Control Lists and entries for security namespaces
+within the project scope. Uses project-scoped tokens to filter
+ACLs, accessible to Project Administrators.
 """
 
 import logging
