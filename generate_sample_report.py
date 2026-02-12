@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Generate a sample Excel report with dummy data to demonstrate the report format.
+Generate sample Data Governance report with dummy data.
+
+Demonstrates the full governance reporting pipeline including:
+- Excel report with charts and heatmaps
+- HTML interactive dashboard
+- Governance scoring and compliance controls
 """
 
 from datetime import datetime, timedelta
@@ -19,7 +24,9 @@ from src.ado_security.collectors.namespaces import ServiceNamespaces
 from src.ado_security.collectors.permissions import GranularPermissions, ServicePermissions
 from src.ado_security.analyzers.matrix import PermissionMatrixBuilder
 from src.ado_security.analyzers.inheritance import InheritanceAnalyzer
+from src.ado_security.analyzers.governance import GovernanceAnalyzer
 from src.ado_security.reports.excel_report import ExcelReportGenerator
+from src.ado_security.reports.html_report import HTMLReportGenerator
 
 
 def generate_dummy_groups():
@@ -82,7 +89,7 @@ def generate_dummy_groups():
             description="External contractors with limited access.",
         ),
     ]
-    
+
     return groups
 
 
@@ -99,10 +106,10 @@ def generate_dummy_users():
         ("Jennifer Martinez", "jennifer.martinez@company.com", "Basic", True),
         ("Robert Taylor", "robert.taylor@company.com", "Stakeholder", True),
         ("Amanda White", "amanda.white@company.com", "Basic", False),  # Inactive
-        ("Chris Anderson", "chris.anderson@contractor.com", "Stakeholder", True),
+        ("Chris Anderson", "chris.anderson@contractor.com", "Stakeholder", True),  # External
         ("Maria Garcia", "maria.garcia@company.com", "Basic", True),
     ]
-    
+
     users = []
     for i, (name, email, access, is_active) in enumerate(users_data):
         users.append(User(
@@ -118,7 +125,7 @@ def generate_dummy_users():
             date_created=datetime.now() - timedelta(days=random.randint(30, 365)),
             last_accessed=datetime.now() - timedelta(days=random.randint(0, 30)) if is_active else None,
         ))
-    
+
     return users
 
 
@@ -132,7 +139,7 @@ def assign_members_to_groups(groups, users):
                    principal_name=users[1].principal_name, member_type="user", is_active=True),
     ]
     groups[0].member_count = 2
-    
+
     # Contributors
     groups[1].members = [
         GroupMember(descriptor=u.descriptor, display_name=u.display_name,
@@ -140,7 +147,7 @@ def assign_members_to_groups(groups, users):
         for u in users[2:8]
     ]
     groups[1].member_count = 6
-    
+
     # Readers
     groups[2].members = [
         GroupMember(descriptor=u.descriptor, display_name=u.display_name,
@@ -148,14 +155,14 @@ def assign_members_to_groups(groups, users):
         for u in [users[4], users[8], users[10]]
     ]
     groups[2].member_count = 3
-    
+
     # Build Administrators
     groups[3].members = [
         GroupMember(descriptor=users[2].descriptor, display_name=users[2].display_name,
                    principal_name=users[2].principal_name, member_type="user", is_active=True),
     ]
     groups[3].member_count = 1
-    
+
     # Release Administrators
     groups[4].members = [
         GroupMember(descriptor=users[1].descriptor, display_name=users[1].display_name,
@@ -164,7 +171,7 @@ def assign_members_to_groups(groups, users):
                    principal_name=users[2].principal_name, member_type="user", is_active=True),
     ]
     groups[4].member_count = 2
-    
+
     # DevOps Team
     groups[5].members = [
         GroupMember(descriptor=u.descriptor, display_name=u.display_name,
@@ -172,7 +179,7 @@ def assign_members_to_groups(groups, users):
         for u in [users[1], users[2], users[6]]
     ]
     groups[5].member_count = 3
-    
+
     # QA Team
     groups[6].members = [
         GroupMember(descriptor=u.descriptor, display_name=u.display_name,
@@ -180,7 +187,7 @@ def assign_members_to_groups(groups, users):
         for u in [users[3], users[5], users[7]]
     ]
     groups[6].member_count = 3
-    
+
     # External Contractors (empty for issue detection)
     groups[7].members = []
     groups[7].member_count = 0
@@ -189,7 +196,7 @@ def assign_members_to_groups(groups, users):
 def generate_dummy_namespaces():
     """Generate sample security namespaces."""
     namespaces = ServiceNamespaces()
-    
+
     # Project namespace
     namespaces.project.append(SecurityNamespace(
         namespace_id="52d39943-cb85-4d7f-8fa8-c6baac873819",
@@ -211,7 +218,7 @@ def generate_dummy_namespaces():
             {"bit": 2048, "name": "MANAGE_TEST_CONFIGURATIONS", "display_name": "Manage test configurations"},
         ],
     ))
-    
+
     # Git Repositories
     namespaces.repos.append(SecurityNamespace(
         namespace_id="2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87",
@@ -238,7 +245,7 @@ def generate_dummy_namespaces():
             {"bit": 32768, "name": "PullRequestBypassPolicy", "display_name": "Bypass policies on PR"},
         ],
     ))
-    
+
     # Build
     namespaces.pipelines.append(SecurityNamespace(
         namespace_id="33344d9c-fc72-4d6f-aba5-fa317101a7e9",
@@ -262,7 +269,7 @@ def generate_dummy_namespaces():
             {"bit": 8192, "name": "AdministerBuildPermissions", "display_name": "Administer build permissions"},
         ],
     ))
-    
+
     # Release
     namespaces.release.append(SecurityNamespace(
         namespace_id="c788c23e-1b46-4162-8f5e-d7585343b5de",
@@ -282,7 +289,7 @@ def generate_dummy_namespaces():
             {"bit": 512, "name": "AdministerReleasePermissions", "display_name": "Administer permissions"},
         ],
     ))
-    
+
     # Work Items
     namespaces.boards.append(SecurityNamespace(
         namespace_id="73e71c45-d483-40d5-bdba-62fd076f7f87",
@@ -298,14 +305,14 @@ def generate_dummy_namespaces():
             {"bit": 32, "name": "WORK_ITEM_PERMANENTLY_DELETE", "display_name": "Permanently delete"},
         ],
     ))
-    
+
     return namespaces
 
 
 def generate_dummy_permissions(groups, users):
     """Generate sample permissions."""
     permissions = GranularPermissions()
-    
+
     # Project permissions
     project_perms = [
         # Admins have all project permissions
@@ -332,7 +339,7 @@ def generate_dummy_permissions(groups, users):
                   "View project-level information", 1, PermissionState.INHERITED_ALLOW, is_inherited=True),
     ]
     permissions.project.permissions.extend(project_perms)
-    
+
     # Repos permissions
     repos_perms = [
         # Admins
@@ -346,6 +353,8 @@ def generate_dummy_permissions(groups, users):
                   "Force push", 8, PermissionState.ALLOW),
         Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
                   "Bypass policies", 128, PermissionState.ALLOW),
+        Permission("vssgp.Uy0xLTktMj", "Project Administrators", "Git Repositories", "repo1",
+                  "Manage permissions", 8192, PermissionState.ALLOW),
         # Contributors
         Permission("vssgp.Uy0xLTktMw", "Contributors", "Git Repositories", "repo1",
                   "Read", 2, PermissionState.ALLOW),
@@ -367,9 +376,11 @@ def generate_dummy_permissions(groups, users):
                   "Bypass policies", 128, PermissionState.ALLOW),
         Permission("vssgp.custom1", "DevOps Team", "Git Repositories", "repo1",
                   "Force push", 8, PermissionState.ALLOW),
+        Permission("vssgp.custom1", "DevOps Team", "Git Repositories", "repo1",
+                  "Delete repository", 512, PermissionState.ALLOW),
     ]
     permissions.repos.permissions.extend(repos_perms)
-    
+
     # Pipeline permissions
     pipeline_perms = [
         # Build Admins
@@ -381,6 +392,8 @@ def generate_dummy_permissions(groups, users):
                   "Edit build definition", 2048, PermissionState.ALLOW),
         Permission("vssgp.Uy0xLTktNQ", "Build Administrators", "Build", "build1",
                   "Administer build permissions", 8192, PermissionState.ALLOW),
+        Permission("vssgp.Uy0xLTktNQ", "Build Administrators", "Build", "build1",
+                  "Destroy builds", 32, PermissionState.ALLOW),
         # Contributors
         Permission("vssgp.Uy0xLTktMw", "Contributors", "Build", "build1",
                   "View builds", 1, PermissionState.ALLOW),
@@ -395,7 +408,7 @@ def generate_dummy_permissions(groups, users):
                   "Delete build definition", 4096, PermissionState.ALLOW),
     ]
     permissions.pipelines.permissions.extend(pipeline_perms)
-    
+
     # Release permissions
     release_perms = [
         # Release Admins
@@ -407,6 +420,8 @@ def generate_dummy_permissions(groups, users):
                   "Manage releases", 16, PermissionState.ALLOW),
         Permission("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement", "release1",
                   "Administer permissions", 512, PermissionState.ALLOW),
+        Permission("vssgp.Uy0xLTktNg", "Release Administrators", "ReleaseManagement", "release1",
+                  "Delete release pipeline", 4, PermissionState.ALLOW),
         # Contributors
         Permission("vssgp.Uy0xLTktMw", "Contributors", "ReleaseManagement", "release1",
                   "View releases", 32, PermissionState.ALLOW),
@@ -416,7 +431,7 @@ def generate_dummy_permissions(groups, users):
                   "Edit release pipeline", 2, PermissionState.DENY),
     ]
     permissions.release.permissions.extend(release_perms)
-    
+
     # Boards permissions
     boards_perms = [
         # Contributors
@@ -426,6 +441,8 @@ def generate_dummy_permissions(groups, users):
                   "Edit work items", 2, PermissionState.ALLOW),
         Permission("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking", "wit1",
                   "Delete work items", 8, PermissionState.DENY),
+        Permission("vssgp.Uy0xLTktMw", "Contributors", "WorkItemTracking", "wit1",
+                  "Permanently delete", 32, PermissionState.DENY),
         # Readers
         Permission("vssgp.Uy0xLTktNA", "Readers", "WorkItemTracking", "wit1",
                   "View work items", 1, PermissionState.ALLOW),
@@ -440,31 +457,55 @@ def generate_dummy_permissions(groups, users):
                   "Create child work items", 4, PermissionState.ALLOW),
     ]
     permissions.boards.permissions.extend(boards_perms)
-    
+
     return permissions
 
 
 def main():
-    print("🔄 Generating sample security report with dummy data...")
-    
+    print("Generating Azure DevOps Data Governance sample reports...")
+    print()
+
     # Generate dummy data
     groups = generate_dummy_groups()
     users = generate_dummy_users()
     assign_members_to_groups(groups, users)
     namespaces = generate_dummy_namespaces()
     permissions = generate_dummy_permissions(groups, users)
-    
+
     # Build analyzers
     matrix_builder = PermissionMatrixBuilder(groups, users, permissions)
     permission_report = matrix_builder.build_full_report()
-    
     inheritance_analyzer = InheritanceAnalyzer(groups, users, permissions)
-    
-    # Generate report
-    output_path = Path("reports/sample_security_report.xlsx")
-    output_path.parent.mkdir(exist_ok=True)
-    
-    generator = ExcelReportGenerator(
+
+    # Run governance analysis
+    gov_analyzer = GovernanceAnalyzer(
+        groups=groups,
+        users=users,
+        granular_permissions=permissions,
+        organization="Contoso",
+        project="MyProject",
+    )
+    gov_report = gov_analyzer.analyze()
+
+    # Print governance summary
+    print(f"Governance Score: {gov_report.score.overall_score}/100 (Grade: {gov_report.score.grade})")
+    print(f"  Access Control:       {gov_report.score.access_control_score:.1f}")
+    print(f"  Least Privilege:      {gov_report.score.least_privilege_score:.1f}")
+    print(f"  Separation of Duties: {gov_report.score.separation_of_duties_score:.1f}")
+    print(f"  Audit & Compliance:   {gov_report.score.audit_compliance_score:.1f}")
+    print(f"  Lifecycle Management: {gov_report.score.lifecycle_management_score:.1f}")
+    print()
+    print(f"Findings: {len(gov_report.findings)} total")
+    for risk, count in sorted(gov_report.findings_by_risk.items()):
+        print(f"  {risk}: {count}")
+    print()
+
+    # Generate Excel report
+    output_dir = Path("reports")
+    output_dir.mkdir(exist_ok=True)
+
+    excel_path = output_dir / "sample_governance_report.xlsx"
+    excel_gen = ExcelReportGenerator(
         organization="Contoso",
         project="MyProject",
         groups=groups,
@@ -474,29 +515,52 @@ def main():
         permission_report=permission_report,
         inheritance_analyzer=inheritance_analyzer,
     )
-    
-    file_path = generator.generate(str(output_path))
-    
-    print(f"✅ Sample report generated: {file_path}")
-    print(f"\n📊 Report Contents:")
-    print(f"   • {len(groups)} Groups")
-    print(f"   • {len(users)} Users")
-    print(f"   • {len(permissions.all_permissions())} Permissions")
-    print(f"\n📑 Sheets included:")
-    print("   • Summary")
-    print("   • Groups")
-    print("   • Group Members")
-    print("   • Users")
-    print("   • Security Namespaces")
-    print("   • Perms - Project")
-    print("   • Perms - Repos")
-    print("   • Perms - Pipelines")
-    print("   • Perms - Release")
-    print("   • Perms - Boards")
-    print("   • User Permission Matrix")
-    print("   • Group Permission Matrix")
-    print("   • Inheritance Analysis")
-    print("   • Potential Issues")
+    excel_gen.generate(str(excel_path))
+    print(f"Excel Report: {excel_path}")
+
+    # Generate HTML report
+    html_path = output_dir / "sample_governance_dashboard.html"
+    html_gen = HTMLReportGenerator(
+        organization="Contoso",
+        project="MyProject",
+        groups=groups,
+        users=users,
+        permissions=permissions,
+        permission_report=permission_report,
+        inheritance_analyzer=inheritance_analyzer,
+    )
+    html_gen.generate(str(html_path))
+    print(f"HTML Dashboard: {html_path}")
+
+    print()
+    print(f"Report Contents:")
+    print(f"  {len(groups)} Security Groups")
+    print(f"  {len(users)} Users")
+    print(f"  {len(permissions.all_permissions())} Permissions")
+    print(f"  {len(gov_report.controls)} Compliance Controls")
+    print(f"  {len(gov_report.findings)} Governance Findings")
+    print()
+    print("Excel Sheets:")
+    print("  - Executive Summary (with charts)")
+    print("  - Governance Score (radar + bar charts)")
+    print("  - Compliance Controls (status distribution)")
+    print("  - Risk Findings (sorted by severity)")
+    print("  - Groups Overview (type distribution)")
+    print("  - Group Members")
+    print("  - Users Overview (access level chart)")
+    print("  - Security Namespaces")
+    print("  - Perms - Project/Repos/Pipelines/Release/Boards")
+    print("  - Permission Matrix (heatmap)")
+    print("  - Inheritance Analysis (direct vs inherited)")
+    print("  - Recommendations (prioritized)")
+    print()
+    print("HTML Dashboard Sections:")
+    print("  - Interactive Dashboard with Chart.js")
+    print("  - Governance Scores (radar chart)")
+    print("  - Compliance Controls Table")
+    print("  - Risk Findings Table")
+    print("  - Users & Groups with Charts")
+    print("  - Permissions Analysis")
 
 
 if __name__ == "__main__":

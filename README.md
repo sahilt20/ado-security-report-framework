@@ -1,14 +1,19 @@
-# Azure DevOps Security Report Framework
+# Azure DevOps Data Governance Report Framework
 
-A production-ready Python framework for generating comprehensive security reports from Azure DevOps projects.
+A production-ready Python framework for generating comprehensive **data governance reports** for Azure DevOps projects. Provides risk scoring, compliance controls, visual charts, permission heatmaps, and actionable recommendations.
 
 ## Features
 
-- **Comprehensive Security Analysis**: Groups, users, permissions, access levels
-- **Permission Matrix**: Visual user-permission heatmap
-- **Inheritance Tracking**: Distinguish inherited vs. directly applied permissions
-- **Excel Reports**: Professional multi-sheet reports with conditional formatting
-- **Project Admin Focused**: Designed for project-level security auditing
+- **Data Governance Analysis**: Risk scoring, compliance controls, policy violation detection
+- **Governance Scoring**: Overall score (A-F grade) across 5 governance dimensions
+- **Compliance Controls**: 7 automated compliance checks with Pass/Warning/Fail status
+- **Risk Findings**: Categorized findings with Critical/High/Medium/Low severity
+- **Permission Matrix**: Visual user-permission heatmap with conditional formatting
+- **Inheritance Tracking**: Direct vs inherited permissions with conflict detection
+- **Visual Charts**: Bar, pie, radar, and stacked charts in Excel; interactive Chart.js in HTML
+- **Dual Output**: Professional Excel workbook (12+ sheets) AND interactive HTML dashboard
+- **Separation of Duties**: Detects combined admin roles and overprivileged accounts
+- **Lifecycle Management**: Stale account detection, inactive user flagging
 
 ## Installation
 
@@ -18,10 +23,25 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### Using CLI
+### Generate Sample Report (No Azure DevOps Access Needed)
+
 ```bash
-# Using command line arguments
-python main.py --org "your-org" --project "your-project" --pat "your-pat" --output report.xlsx
+python generate_sample_report.py
+```
+
+This generates both Excel and HTML reports in `reports/` with dummy data demonstrating all features.
+
+### Using CLI with Azure DevOps
+
+```bash
+# Both Excel + HTML (default)
+python main.py --org "your-org" --project "your-project" --pat "your-pat"
+
+# Excel only
+python main.py --org "your-org" --project "your-project" --pat "your-pat" --format excel
+
+# HTML dashboard only
+python main.py --org "your-org" --project "your-project" --pat "your-pat" --format html
 
 # Using config file
 python main.py --config config.yaml
@@ -41,7 +61,7 @@ pat: "${ADO_PAT}"  # Environment variable reference
 
 output:
   path: "./reports"
-  filename: "security_report_{timestamp}.xlsx"
+  filename: "governance_report_{timestamp}.xlsx"
 
 options:
   include_inherited: true
@@ -52,24 +72,78 @@ options:
 
 Your Personal Access Token needs the following scopes:
 - `vso.graph` - Read graph information
-- `vso.security_manage` - Read security information  
+- `vso.security_manage` - Read security information
 - `vso.project` - Read project information
 - `vso.identity` - Read identity information
 
-## Report Sheets
+## Governance Dimensions
+
+| Dimension | What It Measures |
+|-----------|-----------------|
+| Access Control | Admin count, external users, empty groups |
+| Least Privilege | Overprivileged users, high-risk permissions on custom groups |
+| Separation of Duties | Combined Build+Release admin, admin with multiple roles |
+| Audit & Compliance | Finding density, critical/high risk findings |
+| Lifecycle Management | Stale accounts, inactive users with permissions |
+
+## Compliance Controls
+
+| ID | Control | Description |
+|----|---------|-------------|
+| GOV-001 | Administrative Access Control | Admin access limited to 2-3 users |
+| GOV-002 | Least Privilege Enforcement | No excessive high-risk permissions |
+| GOV-003 | Stale Account Management | Inactive accounts removed promptly |
+| GOV-004 | External User Access Control | External users have minimal access |
+| GOV-005 | Security Group Hygiene | Groups have members and clear purpose |
+| GOV-006 | Separation of Duties | Critical roles separated across users |
+| GOV-007 | High-Risk Permission Control | High-risk permissions tightly controlled |
+
+## Excel Report Sheets
 
 | Sheet | Description |
 |-------|-------------|
-| Summary | Report metadata and totals |
-| Groups | Security groups with member counts |
-| Group Members | Detailed group membership |
-| Users | Users with access levels |
-| Security Namespaces | Available permission namespaces |
-| Permissions by Group | Group permission assignments |
-| Permissions by User | User effective permissions |
-| User Permission Matrix | User × Permission heatmap |
-| Inheritance Analysis | Inherited vs direct permissions |
-| Potential Issues | Security concerns and recommendations |
+| Executive Summary | Governance dashboard with grade, scores, key metrics, and charts |
+| Governance Score | Score breakdown with radar chart and bar chart |
+| Compliance Controls | Control assessment results with status distribution chart |
+| Risk Findings | All findings sorted by severity with category chart |
+| Groups Overview | Security groups with type distribution and members chart |
+| Group Members | Detailed group membership listing |
+| Users Overview | Users with access levels, activity status, and distribution charts |
+| Security Namespaces | Namespace inventory by service area |
+| Perms - \<Service\> | Per-service permission details with state coloring |
+| Permission Matrix | User x Permission heatmap with stacked bar chart |
+| Inheritance Analysis | Direct vs inherited permissions with conflict detection |
+| Recommendations | Prioritized action items by impact |
+
+## HTML Dashboard
+
+The HTML report provides an interactive dashboard with:
+- **Navigation tabs**: Dashboard, Scores, Controls, Findings, Users, Groups, Permissions
+- **Chart.js visualizations**: Doughnut, bar, radar, and horizontal bar charts
+- **Responsive design**: Works on desktop and mobile
+- **Sortable tables**: All data tables with hover highlighting
+- **No server required**: Opens directly in any browser
+
+## Architecture
+
+```
+src/ado_security/
+  analyzers/
+    governance.py    # Risk scoring, compliance, policy checks
+    matrix.py        # Permission matrix builder
+    inheritance.py   # Inheritance analyzer
+  collectors/
+    namespaces.py    # Security namespaces
+    groups.py        # Groups and membership
+    users.py         # User entitlements
+    permissions.py   # ACLs and permissions
+  reports/
+    excel_report.py  # Excel report with charts
+    html_report.py   # HTML interactive dashboard
+  client.py          # Azure DevOps API client
+  config.py          # Configuration management
+  models.py          # Data models
+```
 
 ## License
 

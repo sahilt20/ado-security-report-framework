@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Azure DevOps Security Report Framework - CLI Entry Point.
+Azure DevOps Data Governance Report Framework - CLI Entry Point.
 
-Generates comprehensive security reports for Azure DevOps projects.
+Generates comprehensive data governance reports for Azure DevOps projects
+including security analysis, compliance controls, risk scoring, and
+visual dashboards.
 
 Usage:
     python main.py --org "myorg" --project "myproject" --pat $PAT
     python main.py --config config.yaml
+    python main.py --org "myorg" --project "myproject" --pat $PAT --format html
 """
 
 import argparse
@@ -26,8 +29,9 @@ from src.ado_security.collectors import (
 from src.ado_security.analyzers import (
     InheritanceAnalyzer,
     PermissionMatrixBuilder,
+    GovernanceAnalyzer,
 )
-from src.ado_security.reports import ExcelReportGenerator
+from src.ado_security.reports import ExcelReportGenerator, HTMLReportGenerator
 
 
 # Configure logging
@@ -44,77 +48,87 @@ logger = logging.getLogger(__name__)
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Generate Azure DevOps security reports",
+        description="Generate Azure DevOps Data Governance reports",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Using command line arguments
+  # Excel report (default)
   python main.py --org myorg --project myproject --pat $PAT
+
+  # HTML dashboard
+  python main.py --org myorg --project myproject --pat $PAT --format html
+
+  # Both formats
+  python main.py --org myorg --project myproject --pat $PAT --format both
 
   # Using config file
   python main.py --config config.yaml
-
-  # Specify output file
-  python main.py --org myorg --project myproject --pat $PAT --output report.xlsx
         """,
     )
-    
+
     parser.add_argument(
         "--config", "-c",
         help="Path to YAML configuration file",
     )
-    
+
     parser.add_argument(
         "--org", "--organization",
         dest="organization",
         help="Azure DevOps organization name",
     )
-    
+
     parser.add_argument(
         "--project", "-p",
         help="Azure DevOps project name",
     )
-    
+
     parser.add_argument(
         "--pat",
         help="Personal Access Token",
     )
-    
+
     parser.add_argument(
         "--output", "-o",
-        help="Output Excel file path",
+        help="Output file path (without extension)",
         default=None,
     )
-    
+
+    parser.add_argument(
+        "--format", "-f",
+        choices=["excel", "html", "both"],
+        default="both",
+        help="Output format: excel, html, or both (default: both)",
+    )
+
     parser.add_argument(
         "--sections",
         help="Comma-separated list of sections to include (groups,users,permissions)",
         default="all",
     )
-    
+
     parser.add_argument(
         "--include-disabled",
         action="store_true",
         help="Include disabled/inactive users in report",
     )
-    
+
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging",
     )
-    
+
     return parser.parse_args()
 
 
 def main():
     """Main entry point."""
     args = parse_arguments()
-    
+
     # Set logging level
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     try:
         # Load configuration
         config = load_config(
@@ -123,32 +137,32 @@ def main():
             project=args.project,
             pat=args.pat,
         )
-        
-        logger.info(f"Starting security report for {config.organization}/{config.project}")
-        
+
+        logger.info(f"Starting data governance report for {config.organization}/{config.project}")
+
         # Create API client
         client = AzureDevOpsClient(config)
-        
+
         # Validate connection
         logger.info("Validating connection...")
         client.validate_connection()
-        
+
         # Determine sections to collect
         sections = args.sections.lower().split(",") if args.sections != "all" else None
-        
+
         # Collect security namespaces
         logger.info("Collecting security namespaces...")
         namespaces_collector = NamespacesCollector(client)
         namespaces = namespaces_collector.collect()
         service_namespaces = namespaces_collector.collect_by_service()
-        
+
         # Collect groups
         groups = []
         if sections is None or "groups" in sections:
             logger.info("Collecting security groups...")
             groups_collector = GroupsCollector(client)
             groups = groups_collector.collect(include_members=True)
-        
+
         # Collect users
         users = []
         if sections is None or "users" in sections:
@@ -158,7 +172,7 @@ def main():
                 include_disabled=args.include_disabled or config.options.include_disabled_users,
             )
             users = users_collector.collect()
-        
+
         # Collect permissions
         granular_permissions = None
         if sections is None or "permissions" in sections:
@@ -167,71 +181,119 @@ def main():
             granular_permissions = permissions_collector.collect_by_service(
                 namespaces=config.options.namespaces if config.options.namespaces else None
             )
-        
+
         # Build permission matrices
         permission_report = None
         inheritance_analyzer = None
-        
+
         if granular_permissions and groups and users:
             logger.info("Building permission matrices...")
             matrix_builder = PermissionMatrixBuilder(groups, users, granular_permissions)
             permission_report = matrix_builder.build_full_report()
-            
+
             logger.info("Analyzing permission inheritance...")
             inheritance_analyzer = InheritanceAnalyzer(groups, users, granular_permissions)
-        
+
+        # Run governance analysis
+        if granular_permissions and groups and users:
+            logger.info("Running governance analysis...")
+            gov_analyzer = GovernanceAnalyzer(
+                groups=groups,
+                users=users,
+                granular_permissions=granular_permissions,
+                organization=config.organization,
+                project=config.project,
+            )
+            gov_report = gov_analyzer.analyze()
+            logger.info(f"Governance Score: {gov_report.score.overall_score}/100 (Grade: {gov_report.score.grade})")
+            logger.info(f"Findings: {len(gov_report.findings)} total, "
+                        f"{len(gov_report.critical_findings)} critical, "
+                        f"{len(gov_report.high_findings)} high")
+
         # Generate output path
-        output_path = args.output
-        if not output_path:
+        output_base = args.output
+        if not output_base:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = config.output.filename.format(timestamp=timestamp)
-            output_path = str(Path(config.output.path) / filename)
-        
+            # Strip extension for base path
+            filename_base = filename.rsplit(".", 1)[0] if "." in filename else filename
+            output_base = str(Path(config.output.path) / filename_base)
+
+        output_format = args.format
+        generated_files = []
+
         # Generate Excel report
-        logger.info("Generating Excel report...")
-        report_generator = ExcelReportGenerator(
-            organization=config.organization,
-            project=config.project,
-            groups=groups,
-            users=users,
-            namespaces=service_namespaces,
-            permissions=granular_permissions or __import__(
-                "src.ado_security.collectors.permissions",
-                fromlist=["GranularPermissions"]
-            ).GranularPermissions(),
-            permission_report=permission_report,
-            inheritance_analyzer=inheritance_analyzer,
-        )
-        
-        output_file = report_generator.generate(output_path)
-        
+        if output_format in ("excel", "both"):
+            excel_path = f"{output_base}.xlsx"
+            logger.info("Generating Excel governance report...")
+            excel_gen = ExcelReportGenerator(
+                organization=config.organization,
+                project=config.project,
+                groups=groups,
+                users=users,
+                namespaces=service_namespaces,
+                permissions=granular_permissions or __import__(
+                    "src.ado_security.collectors.permissions",
+                    fromlist=["GranularPermissions"]
+                ).GranularPermissions(),
+                permission_report=permission_report,
+                inheritance_analyzer=inheritance_analyzer,
+            )
+            excel_gen.generate(excel_path)
+            generated_files.append(("Excel", excel_path))
+
+        # Generate HTML report
+        if output_format in ("html", "both"):
+            html_path = f"{output_base}.html"
+            logger.info("Generating HTML governance dashboard...")
+            html_gen = HTMLReportGenerator(
+                organization=config.organization,
+                project=config.project,
+                groups=groups,
+                users=users,
+                permissions=granular_permissions or __import__(
+                    "src.ado_security.collectors.permissions",
+                    fromlist=["GranularPermissions"]
+                ).GranularPermissions(),
+                permission_report=permission_report,
+                inheritance_analyzer=inheritance_analyzer,
+            )
+            html_gen.generate(html_path)
+            generated_files.append(("HTML", html_path))
+
+        # Print summary
         logger.info("=" * 60)
         logger.info("Report generation complete!")
-        logger.info(f"Output file: {output_file}")
+        for fmt, path in generated_files:
+            logger.info(f"{fmt} Report: {path}")
         logger.info("=" * 60)
-        
-        # Print summary
-        print(f"\n✅ Security report generated successfully!")
-        print(f"📊 Report: {output_file}")
-        print(f"\n📈 Summary:")
-        print(f"   • Groups: {len(groups)}")
-        print(f"   • Users: {len(users)}")
-        print(f"   • Security Namespaces: {len(namespaces)}")
-        
+
+        print(f"\nData Governance Report Generated Successfully!")
+        print(f"Organization: {config.organization} | Project: {config.project}")
+        print(f"\nGenerated Reports:")
+        for fmt, path in generated_files:
+            print(f"  {fmt}: {path}")
+        print(f"\nSummary:")
+        print(f"  Groups: {len(groups)}")
+        print(f"  Users: {len(users)}")
+        print(f"  Security Namespaces: {len(namespaces)}")
         if granular_permissions:
             total_perms = len(granular_permissions.all_permissions())
-            print(f"   • Total Permissions: {total_perms}")
-        
+            print(f"  Total Permissions: {total_perms}")
+        if granular_permissions and groups and users:
+            print(f"  Governance Score: {gov_report.score.overall_score}/100 (Grade: {gov_report.score.grade})")
+            print(f"  Findings: {len(gov_report.findings)} total")
+
         return 0
-        
+
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         return 1
-        
+
     except Exception as e:
         logger.exception(f"Unexpected error: {e}")
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         return 1
 
 
