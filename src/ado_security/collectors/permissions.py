@@ -92,11 +92,12 @@ class GranularPermissions:
 class PermissionsCollector:
     """
     Collects permissions (ACLs/ACEs) from Azure DevOps.
-    
+
     Retrieves Access Control Lists for security namespaces and
     decodes permission bitmasks to human-readable format.
+    Resolves resource tokens to human-readable names (repos, pipelines, releases).
     """
-    
+
     def __init__(
         self,
         client: AzureDevOpsClient,
@@ -104,7 +105,7 @@ class PermissionsCollector:
     ):
         """
         Initialize the collector.
-        
+
         Args:
             client: Azure DevOps API client
             namespaces_collector: Collector with namespace information
@@ -113,6 +114,7 @@ class PermissionsCollector:
         self.namespaces_collector = namespaces_collector
         self._identity_cache: Dict[str, str] = {}  # descriptor -> display name
         self._acls_cache: Dict[str, List[AccessControlList]] = {}
+        self._resource_name_cache: Dict[str, str] = {}  # token -> display name
     
     def collect(
         self,
@@ -159,31 +161,38 @@ class PermissionsCollector:
     ) -> GranularPermissions:
         """
         Collect and organize permissions by Azure DevOps service.
-        
+
         Args:
             namespaces: List of namespace names to collect (None = all)
-            
+
         Returns:
             GranularPermissions with permissions organized by service
         """
         acls = self.collect(namespaces)
         granular = GranularPermissions()
-        project_id = self.client.get_project_id()
-        
+
+        # Pre-fetch resource names for all tokens
+        self._prefetch_resource_names(acls)
+
         for acl in acls:
             namespace = self.namespaces_collector.get_namespace(acl.namespace_id)
             if not namespace:
                 continue
-            
+
             service_name = NAMESPACE_SERVICE_MAPPING.get(namespace.name, "Other")
             service_perms = granular.get_by_service(service_name)
             service_perms.acls.append(acl)
-            
+
+            # Resolve resource display name for this token
+            resource_name = self._resource_name_cache.get(acl.token, "")
+
             # Decode permissions for each ACE
             for ace in acl.aces:
-                permissions = self._decode_ace_permissions(ace, namespace, acl.token)
+                permissions = self._decode_ace_permissions(
+                    ace, namespace, acl.token, resource_name,
+                )
                 service_perms.permissions.extend(permissions)
-        
+
         return granular
     
     def _collect_namespace_acls(
@@ -273,21 +282,22 @@ class PermissionsCollector:
         ace: AccessControlEntry,
         namespace: SecurityNamespace,
         token: str,
+        resource_display_name: str = "",
     ) -> List[Permission]:
         """Decode an ACE into individual Permission objects."""
         permissions = []
-        
+
         for action in namespace.actions:
             bit = action.get("bit", 0)
             if not bit:
                 continue
-            
+
             action_name = action.get("display_name") or action.get("name", f"Unknown({bit})")
-            
+
             # Determine permission state
             state = PermissionState.NOT_SET
             is_inherited = False
-            
+
             # Check explicit deny first (deny takes precedence)
             if ace.deny & bit:
                 state = PermissionState.DENY
@@ -302,7 +312,7 @@ class PermissionsCollector:
                 is_inherited = True
             else:
                 continue  # Not set, skip
-            
+
             permissions.append(Permission(
                 identity_descriptor=ace.identity_descriptor,
                 identity_name=ace.identity_display_name,
@@ -312,10 +322,89 @@ class PermissionsCollector:
                 permission_bit=bit,
                 state=state,
                 is_inherited=is_inherited,
+                resource_display_name=resource_display_name,
             ))
-        
+
         return permissions
     
+    def _prefetch_resource_names(self, acls: List[AccessControlList]):
+        """Pre-fetch resource names for all unique tokens across ACLs."""
+        tokens_by_namespace: Dict[str, Set[str]] = defaultdict(set)
+        for acl in acls:
+            ns = self.namespaces_collector.get_namespace(acl.namespace_id)
+            if ns:
+                tokens_by_namespace[ns.name].add(acl.token)
+
+        # Fetch repo names
+        repo_tokens = tokens_by_namespace.get("Git Repositories", set()) | tokens_by_namespace.get("GitRepositories", set())
+        if repo_tokens:
+            self._resolve_repo_names(repo_tokens)
+
+        # Fetch pipeline (build) names
+        build_tokens = tokens_by_namespace.get("Build", set())
+        if build_tokens:
+            self._resolve_pipeline_names(build_tokens)
+
+        # Fetch release pipeline names
+        release_tokens = tokens_by_namespace.get("ReleaseManagement", set()) | tokens_by_namespace.get("ReleaseManagement2", set())
+        if release_tokens:
+            self._resolve_release_names(release_tokens)
+
+    def _resolve_repo_names(self, tokens: Set[str]):
+        """Resolve Git repository tokens to repo names via API."""
+        try:
+            response = self.client.core_get(
+                f"{self.client.project}/_apis/git/repositories",
+            )
+            repos = {r["id"]: r["name"] for r in response.get("value", [])}
+            for token in tokens:
+                # Token format: repoV2/<project_id>/<repo_id>
+                parts = token.replace("\\", "/").split("/")
+                if len(parts) >= 3:
+                    repo_id = parts[-1]
+                    if repo_id in repos:
+                        self._resource_name_cache[token] = repos[repo_id]
+                elif len(parts) == 2:
+                    # Root token repoV2/<project_id> = all repos
+                    self._resource_name_cache[token] = "All Repositories"
+        except Exception as e:
+            logger.debug(f"Could not resolve repo names: {e}")
+
+    def _resolve_pipeline_names(self, tokens: Set[str]):
+        """Resolve build/pipeline tokens to pipeline names via API."""
+        try:
+            response = self.client.core_get(
+                f"{self.client.project}/_apis/build/definitions",
+            )
+            pipelines = {str(d["id"]): d["name"] for d in response.get("value", [])}
+            for token in tokens:
+                # Token format: <project_id>/<definition_id> or just <project_id>
+                parts = token.split("/")
+                if len(parts) >= 2:
+                    def_id = parts[-1]
+                    if def_id in pipelines:
+                        self._resource_name_cache[token] = pipelines[def_id]
+        except Exception as e:
+            logger.debug(f"Could not resolve pipeline names: {e}")
+
+    def _resolve_release_names(self, tokens: Set[str]):
+        """Resolve release pipeline tokens to release names via API."""
+        try:
+            response = self.client.core_get(
+                f"{self.client.project}/_apis/release/definitions",
+                api_version="7.1-preview.4",
+            )
+            releases = {str(d["id"]): d["name"] for d in response.get("value", [])}
+            for token in tokens:
+                # Token format: <project_id>/<definition_id>
+                parts = token.split("/")
+                if len(parts) >= 2:
+                    def_id = parts[-1]
+                    if def_id in releases:
+                        self._resource_name_cache[token] = releases[def_id]
+        except Exception as e:
+            logger.debug(f"Could not resolve release names: {e}")
+
     def _resolve_identity(self, descriptor: str) -> str:
         """Resolve an identity descriptor to display name."""
         if descriptor in self._identity_cache:
@@ -373,10 +462,13 @@ class PermissionsCollector:
             for acl in acls:
                 ace = acl.get_ace_for_identity(descriptor)
                 if ace:
+                    resource_name = self._resource_name_cache.get(acl.token, "")
                     permissions.extend(
-                        self._decode_ace_permissions(ace, namespace, acl.token)
+                        self._decode_ace_permissions(
+                            ace, namespace, acl.token, resource_name,
+                        )
                     )
-        
+
         return permissions
     
     def get_identity_permissions_by_service(

@@ -37,14 +37,6 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### Generate Sample Report (No Azure DevOps Access Needed)
-
-```bash
-python generate_sample_report.py
-```
-
-This generates both Excel and HTML reports in `reports/` with dummy data demonstrating all features.
-
 ### Using CLI with Azure DevOps
 
 ```bash

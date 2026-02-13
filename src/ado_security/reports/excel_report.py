@@ -1481,13 +1481,14 @@ class ExcelReportGenerator:
         ws.sheet_properties.tabColor = Colors.PRIMARY
 
         self._write_title(ws, 1, 1, "All Permissions - Unified View", 16)
-        ws.merge_cells("A1:I1")
+        ws.merge_cells("A1:K1")
         ws.cell(row=2, column=1,
-            value="Filter by Service, Identity, Resource, or State using Excel auto-filters. All resource IDs resolved to display names."
+            value="Use auto-filters to filter by Resource Name, User/Group, Service, or State. "
+                  "Filter any resource to see all users and their permissions, or filter any user to see all resources."
         ).font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY, italic=True)
-        ws.merge_cells("A2:I2")
+        ws.merge_cells("A2:K2")
 
-        # --- Summary cards at top ---
+        # --- Collect all permissions ---
         all_perms = []
         for svc in self.permissions.all_services():
             sp = self.permissions.get_by_service(svc)
@@ -1500,8 +1501,8 @@ class ExcelReportGenerator:
         total_direct = len(all_perms) - total_inherited
         unique_identities = len(set(p.identity_name for _, p in all_perms))
         unique_resources = len(set(p.resource_label for _, p in all_perms))
-        unique_services = len(set(s for s, _ in all_perms))
 
+        # --- Summary cards ---
         row = 4
         for ci, (lbl, val, clr) in enumerate([
             ("Total Perms", len(all_perms), Colors.ACCENT),
@@ -1511,74 +1512,81 @@ class ExcelReportGenerator:
             ("Direct", total_direct, Colors.PRIMARY),
             ("Identities", unique_identities, Colors.ACCENT),
             ("Resources", unique_resources, Colors.ACCENT),
-            ("Services", unique_services, Colors.PRIMARY),
         ]):
             self._metric_card(ws, row, ci + 1, lbl, val, clr)
 
-        # --- Permission State Legend ---
+        # --- Legends ---
         legend_row = row
-        legend_start_col = 10
-        ws.cell(row=legend_row, column=legend_start_col, value="STATE LEGEND:").font = Font(name="Calibri", size=9, bold=True, color=Colors.PRIMARY)
-        legend_items = [
-            ("Allow", PermissionState.ALLOW),
-            ("Deny", PermissionState.DENY),
+        lcol = 9
+        ws.cell(row=legend_row, column=lcol, value="STATE LEGEND:").font = Font(name="Calibri", size=9, bold=True, color=Colors.PRIMARY)
+        for li, (lbl, st) in enumerate([
+            ("Allow", PermissionState.ALLOW), ("Deny", PermissionState.DENY),
             ("Inherited Allow", PermissionState.INHERITED_ALLOW),
             ("Inherited Deny", PermissionState.INHERITED_DENY),
             ("Not Set", PermissionState.NOT_SET),
-        ]
-        for li, (lbl, st) in enumerate(legend_items):
-            c = ws.cell(row=legend_row + 1, column=legend_start_col + li, value=lbl)
+        ]):
+            c = ws.cell(row=legend_row + 1, column=lcol + li, value=lbl)
             c.fill = PERM_STATE_FILLS.get(st, PatternFill())
             c.font = PERM_STATE_FONTS.get(st, Font())
-            c.alignment = _center()
-            c.border = _border()
-            ws.column_dimensions[get_column_letter(legend_start_col + li)].width = 16
+            c.alignment = _center(); c.border = _border()
+            ws.column_dimensions[get_column_letter(lcol + li)].width = 16
 
-        # --- Service color legend ---
         svc_colors = {"Repos": "D6E4F0", "Pipelines": "E2EFDA", "Release": "FCE4D6",
                       "Project": "DDEBF7", "Boards": "FFF2CC"}
-        ws.cell(row=legend_row, column=legend_start_col + 5, value="SERVICE COLORS:").font = Font(name="Calibri", size=9, bold=True, color=Colors.PRIMARY)
-        for si, (svc_name, svc_clr) in enumerate(svc_colors.items()):
-            c = ws.cell(row=legend_row + 1, column=legend_start_col + 5 + si, value=svc_name)
-            c.fill = PatternFill(start_color=svc_clr, end_color=svc_clr, fill_type="solid")
-            c.alignment = _center(); c.border = _border()
-            c.font = Font(name="Calibri", size=9, bold=True)
-            ws.column_dimensions[get_column_letter(legend_start_col + 5 + si)].width = 12
 
         # --- Main permissions table ---
+        # Column order designed for filtering: Resource first, then User, so
+        # filtering a resource shows all users, filtering a user shows all resources
         row = 7
-        headers = ["Service", "Identity", "Resource", "Permission", "State", "Inherited", "Resource Type", "Namespace", "Source"]
-        widths = [14, 24, 28, 30, 18, 12, 16, 22, 20]
+        headers = [
+            "Resource Name", "Resource Type", "Service",
+            "User / Group", "Permission", "State",
+            "Inherited", "High Risk", "Namespace", "Source",
+        ]
+        widths = [30, 16, 14, 26, 30, 18, 12, 12, 22, 20]
         self._write_headers(ws, row, headers, widths)
 
-        # Sort: service, then identity, then resource
-        all_perms.sort(key=lambda x: (x[0], x[1].identity_name, x[1].resource_label, x[1].permission_name))
+        HIGH_RISK_PERMS = {
+            "Administer", "Force push", "Bypass policies", "Delete build definition",
+            "Delete release pipeline", "Delete repository", "Manage permissions",
+            "Administer build permissions", "Administer permissions",
+            "Manage release approvers", "Permanently delete", "Destroy builds",
+        }
+
+        # Sort: resource, then user, then permission for natural grouping
+        all_perms.sort(key=lambda x: (
+            x[1].resource_label, x[1].identity_name, x[1].permission_name,
+        ))
 
         for i, (svc, p) in enumerate(all_perms):
             r = row + 1 + i
             state_str = p.state.value.replace("_", " ").title()
             resource_type = self._resource_type_from_token(p.resource_token)
+            is_high_risk = p.permission_name in HIGH_RISK_PERMS
             self._write_row(ws, r, [
-                svc, p.identity_name, p.resource_label, p.permission_name,
-                state_str, "Yes" if p.is_inherited else "No",
-                resource_type, p.namespace_name, p.source,
+                p.resource_label, resource_type, svc,
+                p.identity_name, p.permission_name, state_str,
+                "Yes" if p.is_inherited else "No",
+                "YES" if is_high_risk else "",
+                p.namespace_name, p.source,
             ], alt=i % 2 == 1)
-            # Color-code State
+            # Color-code State (column 6)
             sf = PERM_STATE_FILLS.get(p.state)
             sff = PERM_STATE_FONTS.get(p.state)
             if sf:
-                ws.cell(row=r, column=5).fill = sf
+                ws.cell(row=r, column=6).fill = sf
             if sff:
-                ws.cell(row=r, column=5).font = sff
-            # Color-code service
+                ws.cell(row=r, column=6).font = sff
+            # Color-code service (column 3)
             svc_fill = svc_colors.get(svc)
             if svc_fill:
-                ws.cell(row=r, column=1).fill = PatternFill(start_color=svc_fill, end_color=svc_fill, fill_type="solid")
+                ws.cell(row=r, column=3).fill = PatternFill(start_color=svc_fill, end_color=svc_fill, fill_type="solid")
             # Highlight high-risk permissions
-            if p.permission_name in ("Administer", "Force push", "Bypass policies",
-                                     "Delete build pipeline", "Manage release approvers"):
-                ws.cell(row=r, column=4).fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
-                ws.cell(row=r, column=4).font = Font(name="Calibri", size=10, bold=True)
+            if is_high_risk:
+                ws.cell(row=r, column=5).fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+                ws.cell(row=r, column=5).font = Font(name="Calibri", size=10, bold=True)
+                ws.cell(row=r, column=8).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                ws.cell(row=r, column=8).font = Font(name="Calibri", size=10, bold=True, color=Colors.DENY_TEXT)
 
         last_data_row = row + len(all_perms)
         if all_perms:
@@ -1606,8 +1614,7 @@ class ExcelReportGenerator:
                 svc_stats[svc]["inherited"] += 1
             else:
                 svc_stats[svc]["direct"] += 1
-            if p.permission_name in ("Administer", "Force push", "Bypass policies",
-                                     "Delete build pipeline", "Manage release approvers"):
+            if p.permission_name in HIGH_RISK_PERMS:
                 svc_stats[svc]["high_risk"] += 1
 
         svc_names_sorted = sorted(svc_stats.keys())
@@ -1642,65 +1649,85 @@ class ExcelReportGenerator:
         ws.cell(row=res_row, column=1, value="PERMISSIONS BY RESOURCE").font = Font(
             name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
         res_row += 1
-        self._write_headers(ws, res_row, ["Resource", "Service", "Identities", "Allow", "Deny", "Total"],
-                            widths=[28, 14, 12, 10, 10, 10])
+        self._write_headers(ws, res_row, ["Resource Name", "Type", "Service", "Users/Groups", "Allow", "Deny", "High-Risk", "Total"],
+                            widths=[30, 16, 14, 14, 10, 10, 12, 10])
         res_stats: Dict[str, Dict] = {}
         for svc, p in all_perms:
             key = p.resource_label
             if key not in res_stats:
-                res_stats[key] = {"service": svc, "identities": set(), "allow": 0, "deny": 0, "total": 0}
+                res_stats[key] = {"type": self._resource_type_from_token(p.resource_token),
+                                  "service": svc, "identities": set(),
+                                  "allow": 0, "deny": 0, "high_risk": 0, "total": 0}
             res_stats[key]["identities"].add(p.identity_name)
             res_stats[key]["total"] += 1
             if p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW):
                 res_stats[key]["allow"] += 1
             if p.state in (PermissionState.DENY, PermissionState.INHERITED_DENY):
                 res_stats[key]["deny"] += 1
+            if p.permission_name in HIGH_RISK_PERMS:
+                res_stats[key]["high_risk"] += 1
 
         for j, (res, data) in enumerate(sorted(res_stats.items(), key=lambda x: x[1]["total"], reverse=True)):
             r = res_row + 1 + j
-            self._write_row(ws, r, [res, data["service"], len(data["identities"]),
-                                    data["allow"], data["deny"], data["total"]], alt=j % 2 == 1)
+            self._write_row(ws, r, [
+                res, data["type"], data["service"], len(data["identities"]),
+                data["allow"], data["deny"], data["high_risk"], data["total"],
+            ], alt=j % 2 == 1)
             if data["deny"] > 0:
-                ws.cell(row=r, column=5).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+                ws.cell(row=r, column=6).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            if data["high_risk"] > 0:
+                ws.cell(row=r, column=7).fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
 
-        # User distribution chart
+        # --- User permission summary ---
         ucr = res_row + len(res_stats) + 2
-        user_totals: Dict[str, Dict[str, int]] = {}
-        if self.permission_report and self.permission_report.matrices:
-            for sn, sm in self.permission_report.matrices.items():
-                for un, summary in sm.summary.items():
-                    if un not in user_totals:
-                        user_totals[un] = {"allow": 0, "deny": 0, "inherited": 0}
-                    for k in ("allow", "deny", "inherited"):
-                        user_totals[un][k] += summary.get(k, 0)
-        if user_totals:
-            ws.cell(row=ucr, column=1, value="PERMISSION DISTRIBUTION PER USER").font = Font(
-                name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
-            ucr += 1
-            ws.cell(row=ucr, column=1, value="User").font = Font(bold=True)
-            ws.cell(row=ucr, column=2, value="Allow").font = Font(bold=True)
-            ws.cell(row=ucr, column=3, value="Deny").font = Font(bold=True)
-            ws.cell(row=ucr, column=4, value="Inherited").font = Font(bold=True)
-            data_users = [u for u in user_totals if any(v > 0 for v in user_totals[u].values())]
-            for j, uname in enumerate(data_users):
-                r = ucr + 1 + j
-                ws.cell(row=r, column=1, value=uname)
-                ws.cell(row=r, column=2, value=user_totals[uname]["allow"])
-                ws.cell(row=r, column=3, value=user_totals[uname]["deny"])
-                ws.cell(row=r, column=4, value=user_totals[uname]["inherited"])
-            if data_users:
-                bar2 = BarChart()
-                bar2.type = "col"; bar2.grouping = "stacked"; bar2.style = 10
-                bar2.title = "Permission Distribution per User"
-                bar2.y_axis.title = "Count"; bar2.x_axis.title = "User"
-                bar2.width = 20; bar2.height = 12; bar2.legend.position = 'b'
-                ca2 = Reference(ws, min_col=1, min_row=ucr + 1, max_row=ucr + len(data_users))
-                for ci, (cn, clr) in enumerate([(2, Colors.SUCCESS), (3, Colors.DANGER), (4, Colors.ACCENT)]):
-                    d = Reference(ws, min_col=cn, min_row=ucr, max_row=ucr + len(data_users))
-                    bar2.add_data(d, titles_from_data=True)
-                    bar2.series[ci].graphicalProperties.solidFill = clr
-                bar2.set_categories(ca2)
-                ws.add_chart(bar2, f"F{ucr}")
+        ws.cell(row=ucr, column=1, value="PERMISSION SUMMARY PER USER / GROUP").font = Font(
+            name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        ucr += 1
+        self._write_headers(ws, ucr, ["User / Group", "Resources", "Allow", "Deny", "Inherited", "High-Risk", "Total"],
+                            widths=[26, 12, 10, 10, 12, 12, 10])
+
+        user_stats: Dict[str, Dict] = {}
+        for svc, p in all_perms:
+            name = p.identity_name
+            if name not in user_stats:
+                user_stats[name] = {"resources": set(), "allow": 0, "deny": 0, "inherited": 0, "high_risk": 0, "total": 0}
+            user_stats[name]["resources"].add(p.resource_label)
+            user_stats[name]["total"] += 1
+            if p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW):
+                user_stats[name]["allow"] += 1
+            if p.state in (PermissionState.DENY, PermissionState.INHERITED_DENY):
+                user_stats[name]["deny"] += 1
+            if p.is_inherited:
+                user_stats[name]["inherited"] += 1
+            if p.permission_name in HIGH_RISK_PERMS:
+                user_stats[name]["high_risk"] += 1
+
+        for j, (uname, data) in enumerate(sorted(user_stats.items(), key=lambda x: x[1]["total"], reverse=True)):
+            r = ucr + 1 + j
+            self._write_row(ws, r, [
+                uname, len(data["resources"]), data["allow"], data["deny"],
+                data["inherited"], data["high_risk"], data["total"],
+            ], alt=j % 2 == 1)
+            if data["deny"] > 0:
+                ws.cell(row=r, column=4).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            if data["high_risk"] > 0:
+                ws.cell(row=r, column=6).fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+
+        # User bar chart
+        sorted_users = sorted(user_stats.items(), key=lambda x: x[1]["total"], reverse=True)
+        if sorted_users:
+            bar2 = BarChart()
+            bar2.type = "col"; bar2.grouping = "stacked"; bar2.style = 10
+            bar2.title = "Permission Distribution per User / Group"
+            bar2.y_axis.title = "Count"; bar2.x_axis.title = "User / Group"
+            bar2.width = 22; bar2.height = 12; bar2.legend.position = 'b'
+            ca2 = Reference(ws, min_col=1, min_row=ucr + 1, max_row=ucr + len(sorted_users))
+            for ci, (cn, clr) in enumerate([(3, Colors.SUCCESS), (4, Colors.DANGER), (5, Colors.ACCENT)]):
+                d = Reference(ws, min_col=cn, min_row=ucr, max_row=ucr + len(sorted_users))
+                bar2.add_data(d, titles_from_data=True)
+                bar2.series[ci].graphicalProperties.solidFill = clr
+            bar2.set_categories(ca2)
+            ws.add_chart(bar2, f"I{ucr}")
 
     @staticmethod
     def _resource_type_from_token(token: str) -> str:

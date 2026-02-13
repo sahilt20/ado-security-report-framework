@@ -205,22 +205,30 @@ class Permission:
         """Convert an Azure DevOps ACL token to a human-readable label."""
         if not token:
             return "(project-level)"
-        # $PROJECT:vstfs:///... -> "Project Root"
         if token.startswith("$PROJECT"):
             return "Project Root"
-        # repoV2/<project_id>/<repo_id> or similar
+        if token.startswith("$RELEASE"):
+            return "Release Root"
+        # repoV2/<project_id>/<repo_id>
         if token.startswith("repoV2/") or token.startswith("repoV2\\"):
             parts = token.replace("\\", "/").split("/")
             if len(parts) >= 3:
-                return f"Repository ({parts[-1][:8]}...)"
+                repo_id = parts[-1]
+                return f"Repo: {repo_id}"
             return "All Repositories"
-        # Build token patterns: <project_id>/<def_id>
-        if "/" in token and len(token.split("/")) == 2:
-            return f"Resource ({token.split('/')[-1][:12]})"
-        # Release token patterns
-        if token.startswith("$RELEASE"):
-            return "Release Root"
-        return token if len(token) <= 30 else f"{token[:27]}..."
+        # vstfs:/// URIs
+        if "vstfs:///" in token:
+            # Extract the last path segment as the ID
+            segments = token.split("/")
+            return f"Resource: {segments[-1]}" if segments else token
+        # <guid>/<def_id> patterns (builds, releases)
+        if "/" in token:
+            parts = token.split("/")
+            if len(parts) == 2:
+                return f"Definition: {parts[-1]}"
+            # Deeper paths like <project>/<folder>/<def>
+            return f"Resource: {parts[-1]}"
+        return token
 
 
 @dataclass
