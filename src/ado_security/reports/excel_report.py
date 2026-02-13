@@ -171,7 +171,10 @@ class ExcelReportGenerator:
         self._create_governance_score()
         self._create_compliance_controls()
         self._create_risk_findings()
+        self._create_user_risk_profiles()
+        self._create_license_access_analysis()
         self._create_groups_overview()
+        self._create_group_hierarchy()
         self._create_group_members()
         self._create_users_overview()
         self._create_namespace_inventory()
@@ -226,12 +229,71 @@ class ExcelReportGenerator:
         if score_val >= 60: return Colors.GRADE_D
         return Colors.GRADE_F
 
+    # ---- Computed helpers for insights ----
+
+    def _compute_user_insights(self) -> Dict[str, Dict]:
+        """Compute per-user risk insights across all data points."""
+        now = datetime.now()
+        gr = self.gov
+        group_map = {g.descriptor: g for g in self.groups}
+        insights = {}
+        for u in self.users:
+            # Groups this user belongs to
+            user_groups = [group_map[gd].display_name for gd in u.group_memberships if gd in group_map]
+            # Count permissions for this user (via groups)
+            perm_count = 0
+            deny_count = 0
+            high_risk_perms = 0
+            services_accessed = set()
+            for svc in self.permissions.all_services():
+                sp = self.permissions.get_by_service(svc)
+                for p in sp.permissions:
+                    if p.identity_descriptor in u.group_memberships or p.identity_descriptor == u.descriptor:
+                        perm_count += 1
+                        services_accessed.add(svc)
+                        if p.state in (PermissionState.DENY, PermissionState.INHERITED_DENY):
+                            deny_count += 1
+                        if p.permission_name in ("Administer", "Force push", "Bypass policies",
+                                                  "Delete build pipeline", "Manage release approvers"):
+                            high_risk_perms += 1
+            # Risk flags
+            flags = []
+            is_admin = any("Administrator" in g for g in user_groups)
+            if is_admin:
+                flags.append("Admin")
+            if not u.is_active:
+                flags.append("Inactive")
+            if u.origin == "aad" and u.mail_address and "external" in u.mail_address.lower():
+                flags.append("External")
+            if u.last_accessed:
+                days = (now - u.last_accessed).days
+                if days > 90:
+                    flags.append(f"Stale ({days}d)")
+            if high_risk_perms > 3:
+                flags.append("Overprivileged")
+            # Risk score
+            risk_score = 0
+            if is_admin: risk_score += 30
+            if not u.is_active: risk_score += 20
+            if "External" in flags: risk_score += 25
+            if "Stale" in " ".join(flags): risk_score += 15
+            risk_score += min(high_risk_perms * 5, 30)
+
+            insights[u.descriptor] = {
+                "user": u, "groups": user_groups, "perm_count": perm_count,
+                "deny_count": deny_count, "high_risk_perms": high_risk_perms,
+                "services": services_accessed, "flags": flags,
+                "risk_score": min(risk_score, 100), "is_admin": is_admin,
+            }
+        return insights
+
     # ---- Sheet 1: Executive Summary ----
 
     def _create_executive_summary(self):
         ws = self.wb.create_sheet("Executive Summary")
         ws.sheet_properties.tabColor = Colors.PRIMARY
         gr = self.gov
+        user_insights = self._compute_user_insights()
 
         self._write_title(ws, 1, 1, "Azure DevOps Project-Level Data Governance Report", 20)
         ws.merge_cells("A1:J1")
@@ -240,7 +302,7 @@ class ExcelReportGenerator:
         sub.font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY)
         ws.merge_cells("A2:J2")
 
-        # Grade + score
+        # --- Grade + Score + Compliance Status (row 4-6) ---
         row = 4
         gc = self._grade_color(gr.score.overall_score)
         ws.cell(row=row, column=1, value="GOVERNANCE GRADE").font = Font(name="Calibri", size=9, color=Colors.DARK_GRAY, bold=True)
@@ -255,7 +317,29 @@ class ExcelReportGenerator:
         s_cell.alignment = _center()
         ws.merge_cells(f"B{row+1}:B{row+2}")
 
-        # Key metrics
+        # Compliance control status inline
+        pass_c = sum(1 for c in gr.controls if c.status == "Pass")
+        warn_c = sum(1 for c in gr.controls if c.status == "Warning")
+        fail_c = sum(1 for c in gr.controls if c.status == "Fail")
+        for ci, (lbl, val, clr) in enumerate([
+            ("Controls Passed", pass_c, Colors.SUCCESS),
+            ("Warnings", warn_c, Colors.WARNING),
+            ("Controls Failed", fail_c, Colors.DANGER),
+            ("Total Findings", len(gr.findings), Colors.PRIMARY),
+        ]):
+            self._metric_card(ws, row, 3 + ci, lbl, val, clr)
+
+        # Dimension scores inline (cols G-J, row 4-5)
+        dims = [
+            ("Access Control", gr.score.access_control_score),
+            ("Least Privilege", gr.score.least_privilege_score),
+            ("Separation of Duties", gr.score.separation_of_duties_score),
+            ("Lifecycle Mgmt", gr.score.lifecycle_management_score),
+        ]
+        for ci, (lbl, val) in enumerate(dims):
+            self._metric_card(ws, row, 7 + ci, lbl, f"{val:.0f}", self._grade_color(val))
+
+        # --- Key Metrics (row 8-9) ---
         row = 8
         ws.cell(row=row, column=1, value="KEY METRICS").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
         row = 9
@@ -266,101 +350,180 @@ class ExcelReportGenerator:
             ("Admin Users", gr.admin_users, Colors.DANGER if gr.admin_users > 3 else Colors.ACCENT),
             ("External Users", gr.external_users, Colors.WARNING if gr.external_users > 0 else Colors.SUCCESS),
             ("Total Groups", gr.total_groups, Colors.ACCENT),
+            ("Custom Groups", gr.custom_groups, Colors.ACCENT),
             ("Empty Groups", gr.empty_groups, Colors.WARNING if gr.empty_groups > 0 else Colors.SUCCESS),
             ("Total Permissions", gr.total_permissions, Colors.ACCENT),
-            ("Stale Users", gr.stale_users, Colors.DANGER if gr.stale_users > 0 else Colors.SUCCESS),
             ("Overprivileged", gr.overprivileged_users, Colors.DANGER if gr.overprivileged_users > 0 else Colors.SUCCESS),
         ]
         for i, (lbl, val, clr) in enumerate(metrics):
             self._metric_card(ws, row, i + 1, lbl, val, clr)
 
-        # Findings summary table - left side (cols A-C, rows 12-18)
+        # --- Security Posture Highlights (row 12) ---
         row = 12
-        ws.cell(row=row, column=1, value="FINDINGS SUMMARY").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
-        row = 13
-        self._write_headers(ws, row, ["Risk Level", "Count", "Description"], [18, 12, 35])
+        ws.cell(row=row, column=1, value="SECURITY POSTURE HIGHLIGHTS").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row, ["Indicator", "Status", "Detail"], [30, 14, 50])
+        posture_items = [
+            ("Admin-to-User Ratio", f"{gr.admin_users}/{gr.total_users}",
+             "Good" if gr.admin_users <= 3 else "Warning" if gr.admin_users <= 5 else "Fail",
+             f"{gr.admin_users} admins for {gr.total_users} users ({gr.admin_users/max(gr.total_users,1)*100:.0f}%)"),
+            ("External Access", f"{gr.external_users} users",
+             "Pass" if gr.external_users == 0 else "Warning",
+             "No external users" if gr.external_users == 0 else f"{gr.external_users} external users with project access"),
+            ("Stale Accounts", f"{gr.stale_users} accounts",
+             "Pass" if gr.stale_users == 0 else "Fail",
+             "All accounts active" if gr.stale_users == 0 else f"{gr.stale_users} accounts inactive >90 days"),
+            ("Group Hygiene", f"{gr.empty_groups} empty",
+             "Pass" if gr.empty_groups == 0 else "Warning",
+             "All groups have members" if gr.empty_groups == 0 else f"{gr.empty_groups} groups with no members"),
+            ("Deny Rules", f"{gr.deny_permissions} denies",
+             "Pass" if gr.deny_permissions > 0 else "Warning",
+             f"{gr.deny_permissions} explicit deny rules enforced" if gr.deny_permissions > 0 else "No explicit deny rules - relying on defaults"),
+            ("Direct vs Inherited", f"{gr.direct_permissions}/{gr.inherited_permissions}",
+             "Pass" if gr.inherited_permissions >= gr.direct_permissions else "Warning",
+             f"{gr.inherited_permissions} inherited, {gr.direct_permissions} direct assignments"),
+        ]
+        for i, (indicator, value, status, detail) in enumerate(posture_items):
+            r = row + 1 + i
+            self._write_row(ws, r, [indicator, status, detail], alt=i % 2 == 1)
+            sf = STATUS_FILLS.get(status)
+            if sf:
+                ws.cell(row=r, column=2).fill = sf
+                ws.cell(row=r, column=2).alignment = _center()
+
+        # --- Findings by Risk + Category (row 20) ---
+        row = 20
+        ws.cell(row=row, column=1, value="FINDINGS BY RISK LEVEL").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row = 21
+        self._write_headers(ws, row, ["Risk Level", "Count", "% of Total"], [18, 10, 14])
         risk_order = [RiskLevel.CRITICAL, RiskLevel.HIGH, RiskLevel.MEDIUM, RiskLevel.LOW, RiskLevel.INFO]
+        total_findings = max(len(gr.findings), 1)
         for i, risk in enumerate(risk_order):
             cnt = gr.findings_by_risk.get(risk, 0)
             r = row + 1 + i
-            self._write_row(ws, r, [risk, cnt, f"{risk}-level governance findings"])
+            pct = f"{cnt / total_findings * 100:.0f}%"
+            self._write_row(ws, r, [risk, cnt, pct])
             ws.cell(row=r, column=1).fill = SEVERITY_FILLS.get(risk, PatternFill())
+            ws.cell(row=r, column=3).alignment = _center()
             if risk in (RiskLevel.CRITICAL, RiskLevel.HIGH):
                 ws.cell(row=r, column=1).font = Font(name="Calibri", size=10, bold=True, color=Colors.WHITE)
 
-        # Pie chart: findings by risk - right of summary table
+        # Findings by category table (right of risk)
+        ws.cell(row=20, column=5, value="FINDINGS BY CATEGORY").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        cat_data = sorted(gr.findings_by_category.items(), key=lambda x: x[1], reverse=True)
+        r_cat = 21
+        self._write_headers(ws, r_cat, ["", "", "", "", "Category", "Count"], [18, 10, 14, 2, 24, 10])
+        for j, (cat, cnt) in enumerate(cat_data):
+            ws.cell(row=r_cat + 1 + j, column=5, value=cat).border = _border()
+            ws.cell(row=r_cat + 1 + j, column=6, value=cnt).border = _border()
+            ws.cell(row=r_cat + 1 + j, column=6).alignment = _center()
+
+        # Pie chart: findings by risk
         pie = PieChart()
         pie.title = "Findings by Risk Level"
-        pie.style = 10
-        pie.width = 14
-        pie.height = 10
-        cats = Reference(ws, min_col=1, min_row=row + 1, max_row=row + 5)
+        pie.style = 10; pie.width = 14; pie.height = 10
+        cats_ref = Reference(ws, min_col=1, min_row=row + 1, max_row=row + 5)
         vals = Reference(ws, min_col=2, min_row=row + 1, max_row=row + 5)
         pie.add_data(vals, titles_from_data=False)
-        pie.set_categories(cats)
+        pie.set_categories(cats_ref)
         for idx, c in enumerate([Colors.CRITICAL, Colors.HIGH, Colors.MEDIUM, Colors.LOW, Colors.INFO_RISK]):
             pt = DataPoint(idx=idx)
             pt.graphicalProperties.solidFill = c
             pie.series[0].data_points.append(pt)
         pie.dataLabels = DataLabelList()
-        pie.dataLabels.showPercent = True
-        pie.dataLabels.showVal = True
-        pie.dataLabels.showCatName = True
+        pie.dataLabels.showPercent = True; pie.dataLabels.showVal = True; pie.dataLabels.showCatName = True
         pie.legend.position = 'b'
-        ws.add_chart(pie, "E12")
+        ws.add_chart(pie, "H20")
 
-        # Permissions by service - table below findings (row 20+)
-        row = 20
+        # --- Top Risk Users (row 28) ---
+        row = 28
+        ws.cell(row=row, column=1, value="TOP RISK USERS").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row, ["User", "Risk Score", "Flags", "Groups", "Permissions", "High-Risk Perms"],
+                            [22, 12, 26, 30, 14, 16])
+        risk_users = sorted(user_insights.values(), key=lambda x: x["risk_score"], reverse=True)[:8]
+        for i, ui in enumerate(risk_users):
+            u = ui["user"]
+            r = row + 1 + i
+            self._write_row(ws, r, [
+                u.display_name, ui["risk_score"],
+                ", ".join(ui["flags"]) if ui["flags"] else "None",
+                ", ".join(ui["groups"][:3]) + ("..." if len(ui["groups"]) > 3 else ""),
+                ui["perm_count"], ui["high_risk_perms"],
+            ], alt=i % 2 == 1)
+            # Color risk score
+            sc = ws.cell(row=r, column=2)
+            sc.alignment = _center()
+            if ui["risk_score"] >= 60:
+                sc.fill = PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid")
+                sc.font = Font(name="Calibri", bold=True, color=Colors.DENY_TEXT)
+            elif ui["risk_score"] >= 30:
+                sc.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+
+        # --- Permissions by Service + Distribution (row 38) ---
+        row = 38
         ws.cell(row=row, column=1, value="PERMISSIONS BY SERVICE").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
-        row = 21
-        self._write_headers(ws, row, ["Service", "Permissions", "Risk"], [22, 14, 14])
+        row += 1
+        self._write_headers(ws, row, ["Service", "Total Perms", "Risk Level", "Allow", "Deny"],
+                            [22, 14, 14, 10, 10])
         services = sorted(gr.permissions_by_service.items(), key=lambda x: x[1], reverse=True)
         for i, (svc, cnt) in enumerate(services):
             r = row + 1 + i
             risk = gr.risk_by_service.get(svc, "Info")
-            self._write_row(ws, r, [svc, cnt, risk], alt=i % 2 == 1)
+            # Count allow/deny per service
+            sp = self.permissions.get_by_service(svc)
+            allow_c = sum(1 for p in sp.permissions if p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW))
+            deny_c = sum(1 for p in sp.permissions if p.state in (PermissionState.DENY, PermissionState.INHERITED_DENY))
+            self._write_row(ws, r, [svc, cnt, risk, allow_c, deny_c], alt=i % 2 == 1)
             rf = SEVERITY_FILLS.get(risk)
             if rf:
                 ws.cell(row=r, column=3).fill = rf
                 if risk in (RiskLevel.CRITICAL, RiskLevel.HIGH):
                     ws.cell(row=r, column=3).font = Font(color=Colors.WHITE, bold=True)
+            if deny_c > 0:
+                ws.cell(row=r, column=5).fill = PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid")
 
-        # Bar chart: perms by service - right side, below pie chart
         end_svc_row = row + len(services)
         if services:
             bar = BarChart()
-            bar.type = "col"
-            bar.style = 10
+            bar.type = "col"; bar.style = 10
             bar.title = "Permissions by Service Area"
-            bar.y_axis.title = "Count"
-            bar.width = 18
-            bar.height = 10
+            bar.y_axis.title = "Count"; bar.width = 18; bar.height = 10
             d = Reference(ws, min_col=2, min_row=row, max_row=end_svc_row)
             ca = Reference(ws, min_col=1, min_row=row + 1, max_row=end_svc_row)
-            bar.add_data(d, titles_from_data=True)
-            bar.set_categories(ca)
+            bar.add_data(d, titles_from_data=True); bar.set_categories(ca)
             bar.series[0].graphicalProperties.solidFill = Colors.ACCENT
             bar.legend.position = 'b'
-            ws.add_chart(bar, f"E{max(23, end_svc_row + 2)}")
+            ws.add_chart(bar, f"G{row}")
 
-        # Permission distribution - below service table
-        perm_dist_row = end_svc_row + 2
-        ws.cell(row=perm_dist_row, column=1, value="PERMISSION DISTRIBUTION").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
-        perm_dist_row += 1
-        self._write_headers(ws, perm_dist_row, ["State", "Count"], [20, 15])
-        allow_direct = max(0, gr.allow_permissions - gr.inherited_permissions)
-        states_data = [
-            ("Allow (Direct)", allow_direct),
-            ("Allow (Inherited)", gr.inherited_permissions),
-            ("Deny", gr.deny_permissions),
-            ("Direct Assignments", gr.direct_permissions),
-        ]
-        for i, (lbl, cnt) in enumerate(states_data):
-            self._write_row(ws, perm_dist_row + 1 + i, [lbl, cnt])
+        # --- License Summary (right of services) ---
+        lic_row = row
+        ws.cell(row=lic_row - 1, column=7, value="LICENSE DISTRIBUTION").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        lic_dist: Dict[str, int] = {}
+        for u in self.users:
+            lic_dist[u.access_level] = lic_dist.get(u.access_level, 0) + 1
+        for ci, hdr in enumerate(["License Type", "Users", "Active", "Inactive"]):
+            cell = ws.cell(row=lic_row, column=7 + ci, value=hdr)
+            cell.font = _hf(); cell.fill = _hfill(); cell.alignment = _center(); cell.border = _border()
+        for j, (lic, cnt) in enumerate(sorted(lic_dist.items(), key=lambda x: x[1], reverse=True)):
+            r = lic_row + 1 + j
+            active_lic = sum(1 for u in self.users if u.access_level == lic and u.is_active)
+            inactive_lic = cnt - active_lic
+            ws.cell(row=r, column=7, value=lic).border = _border()
+            ws.cell(row=r, column=8, value=cnt).border = _border()
+            ws.cell(row=r, column=8).alignment = _center()
+            ws.cell(row=r, column=9, value=active_lic).border = _border()
+            ws.cell(row=r, column=9).alignment = _center()
+            c10 = ws.cell(row=r, column=10, value=inactive_lic)
+            c10.border = _border(); c10.alignment = _center()
+            if inactive_lic > 0:
+                c10.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
 
         ws.column_dimensions["A"].width = 22
         ws.column_dimensions["B"].width = 18
         ws.column_dimensions["C"].width = 18
+        for col_letter in ["G", "H", "I", "J"]:
+            ws.column_dimensions[col_letter].width = 16
 
     # ---- Sheet: Scoring Methodology ----
 
@@ -784,6 +947,232 @@ class ExcelReportGenerator:
             bar.legend.position = 'b'
             ws.add_chart(bar, f"D{cat_row}")
 
+    # ---- Sheet: User Risk Profiles ----
+
+    def _create_user_risk_profiles(self):
+        ws = self.wb.create_sheet("User Risk Profiles")
+        ws.sheet_properties.tabColor = Colors.DANGER
+        gr = self.gov
+        user_insights = self._compute_user_insights()
+        now = datetime.now()
+
+        self._write_title(ws, 1, 1, "User Risk Profiles & Security Assessment", 16)
+        ws.merge_cells("A1:L1")
+        ws.cell(row=2, column=1,
+            value="Per-user security analysis: risk score, group memberships, permission footprint, and risk indicators."
+        ).font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY, italic=True)
+        ws.merge_cells("A2:L2")
+
+        # Summary cards
+        row = 4
+        total = len(self.users)
+        flagged = sum(1 for ui in user_insights.values() if ui["risk_score"] >= 30)
+        high_risk = sum(1 for ui in user_insights.values() if ui["risk_score"] >= 60)
+        admins = sum(1 for ui in user_insights.values() if ui["is_admin"])
+        for ci, (lbl, val, clr) in enumerate([
+            ("Total Users", total, Colors.ACCENT),
+            ("Flagged Users", flagged, Colors.WARNING if flagged > 0 else Colors.SUCCESS),
+            ("High Risk Users", high_risk, Colors.DANGER if high_risk > 0 else Colors.SUCCESS),
+            ("Admin Users", admins, Colors.DANGER if admins > 3 else Colors.ACCENT),
+        ]):
+            self._metric_card(ws, row, ci + 1, lbl, val, clr)
+
+        # Main table
+        row = 7
+        headers = ["User", "Email", "License", "Active", "Last Access", "Days Idle",
+                   "Risk Score", "Risk Flags", "Groups", "Services Accessed",
+                   "Total Perms", "High-Risk Perms"]
+        widths = [20, 28, 18, 8, 14, 10, 12, 28, 34, 28, 12, 14]
+        self._write_headers(ws, row, headers, widths)
+
+        sorted_users = sorted(user_insights.values(), key=lambda x: x["risk_score"], reverse=True)
+        for i, ui in enumerate(sorted_users):
+            u = ui["user"]
+            r = row + 1 + i
+            if u.last_accessed:
+                days_idle = (now - u.last_accessed).days
+                last_str = u.last_accessed.strftime("%Y-%m-%d")
+            else:
+                days_idle = ""
+                last_str = "No Data"
+            self._write_row(ws, r, [
+                u.display_name, u.mail_address, u.access_level,
+                "Yes" if u.is_active else "No", last_str, days_idle,
+                ui["risk_score"],
+                ", ".join(ui["flags"]) if ui["flags"] else "None",
+                ", ".join(ui["groups"]),
+                ", ".join(sorted(ui["services"])) if ui["services"] else "None",
+                ui["perm_count"], ui["high_risk_perms"],
+            ], alt=i % 2 == 1)
+            # Color risk score
+            sc = ws.cell(row=r, column=7)
+            sc.alignment = _center()
+            if ui["risk_score"] >= 60:
+                sc.fill = PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid")
+                sc.font = Font(name="Calibri", bold=True, color=Colors.DENY_TEXT)
+            elif ui["risk_score"] >= 30:
+                sc.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+            # Inactive highlight
+            if not u.is_active:
+                ws.cell(row=r, column=4).fill = PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid")
+            # Stale highlight
+            if isinstance(days_idle, int) and days_idle > 90:
+                ws.cell(row=r, column=6).fill = PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid")
+                ws.cell(row=r, column=6).font = Font(name="Calibri", bold=True, color=Colors.DENY_TEXT)
+
+        last_row = row + len(sorted_users)
+        if sorted_users:
+            ws.auto_filter.ref = f"A{row}:{get_column_letter(len(headers))}{last_row}"
+            ws.freeze_panes = f"A{row + 1}"
+
+        # Risk distribution chart
+        cr = last_row + 2
+        ws.cell(row=cr, column=1, value="Risk Level"); ws.cell(row=cr, column=2, value="Users")
+        low_risk = sum(1 for ui in user_insights.values() if ui["risk_score"] < 30)
+        med_risk = sum(1 for ui in user_insights.values() if 30 <= ui["risk_score"] < 60)
+        ws.cell(row=cr + 1, column=1, value="Low Risk (0-29)"); ws.cell(row=cr + 1, column=2, value=low_risk)
+        ws.cell(row=cr + 2, column=1, value="Medium Risk (30-59)"); ws.cell(row=cr + 2, column=2, value=med_risk)
+        ws.cell(row=cr + 3, column=1, value="High Risk (60+)"); ws.cell(row=cr + 3, column=2, value=high_risk)
+
+        pie = PieChart()
+        pie.title = "User Risk Distribution"; pie.style = 10; pie.width = 14; pie.height = 10
+        pie.legend.position = 'b'
+        ca = Reference(ws, min_col=1, min_row=cr + 1, max_row=cr + 3)
+        d = Reference(ws, min_col=2, min_row=cr + 1, max_row=cr + 3)
+        pie.add_data(d, titles_from_data=False); pie.set_categories(ca)
+        for idx, c in enumerate([Colors.SUCCESS, Colors.WARNING, Colors.DANGER]):
+            pt = DataPoint(idx=idx); pt.graphicalProperties.solidFill = c
+            pie.series[0].data_points.append(pt)
+        pie.dataLabels = DataLabelList()
+        pie.dataLabels.showPercent = True; pie.dataLabels.showVal = True; pie.dataLabels.showCatName = True
+        ws.add_chart(pie, f"A{cr + 4}")
+
+        # Risk score bar chart
+        bar = BarChart()
+        bar.type = "col"; bar.style = 10
+        bar.title = "Risk Score by User"; bar.y_axis.title = "Risk Score"
+        bar.y_axis.scaling.max = 100; bar.y_axis.scaling.min = 0
+        bar.width = 20; bar.height = 12; bar.legend.position = 'b'
+        # Write chart data
+        ws.cell(row=cr, column=5, value="User"); ws.cell(row=cr, column=6, value="Risk Score")
+        for j, ui in enumerate(sorted_users[:12]):  # Top 12
+            ws.cell(row=cr + 1 + j, column=5, value=ui["user"].display_name)
+            ws.cell(row=cr + 1 + j, column=6, value=ui["risk_score"])
+        num_chart_users = min(len(sorted_users), 12)
+        if num_chart_users:
+            d2 = Reference(ws, min_col=6, min_row=cr, max_row=cr + num_chart_users)
+            ca2 = Reference(ws, min_col=5, min_row=cr + 1, max_row=cr + num_chart_users)
+            bar.add_data(d2, titles_from_data=True); bar.set_categories(ca2)
+            bar.series[0].graphicalProperties.solidFill = Colors.PRIMARY_LIGHT
+            ws.add_chart(bar, f"E{cr + 4}")
+
+    # ---- Sheet: License & Access Analysis ----
+
+    def _create_license_access_analysis(self):
+        ws = self.wb.create_sheet("License & Access")
+        ws.sheet_properties.tabColor = Colors.INFO
+        now = datetime.now()
+
+        self._write_title(ws, 1, 1, "License & Access Level Analysis", 16)
+        ws.merge_cells("A1:H1")
+        ws.cell(row=2, column=1,
+            value="License utilization, cost optimization opportunities, and access level appropriateness analysis."
+        ).font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY, italic=True)
+        ws.merge_cells("A2:H2")
+
+        # License distribution summary
+        row = 4
+        ws.cell(row=row, column=1, value="LICENSE DISTRIBUTION").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        self._write_headers(ws, row, ["License Type", "Total Users", "Active", "Inactive", "Utilization %", "Avg Days Idle"],
+                            [24, 12, 10, 10, 14, 14])
+        lic_data: Dict[str, Dict] = {}
+        for u in self.users:
+            if u.access_level not in lic_data:
+                lic_data[u.access_level] = {"total": 0, "active": 0, "inactive": 0, "idle_days": []}
+            lic_data[u.access_level]["total"] += 1
+            if u.is_active:
+                lic_data[u.access_level]["active"] += 1
+            else:
+                lic_data[u.access_level]["inactive"] += 1
+            if u.last_accessed:
+                lic_data[u.access_level]["idle_days"].append((now - u.last_accessed).days)
+
+        for j, (lic, data) in enumerate(sorted(lic_data.items(), key=lambda x: x[1]["total"], reverse=True)):
+            r = row + 1 + j
+            util = f"{data['active'] / max(data['total'], 1) * 100:.0f}%"
+            avg_idle = f"{sum(data['idle_days']) / max(len(data['idle_days']), 1):.0f}" if data['idle_days'] else "-"
+            self._write_row(ws, r, [lic, data["total"], data["active"], data["inactive"], util, avg_idle],
+                            alt=j % 2 == 1)
+            ws.cell(row=r, column=5).alignment = _center()
+            ws.cell(row=r, column=6).alignment = _center()
+            if data["inactive"] > 0:
+                ws.cell(row=r, column=4).fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+
+        lic_end = row + len(lic_data)
+
+        # Pie chart for license distribution
+        cr = lic_end + 2
+        ws.cell(row=cr, column=1, value="License"); ws.cell(row=cr, column=2, value="Users")
+        for j, (lic, data) in enumerate(sorted(lic_data.items())):
+            ws.cell(row=cr + 1 + j, column=1, value=lic)
+            ws.cell(row=cr + 1 + j, column=2, value=data["total"])
+        if lic_data:
+            pie = PieChart()
+            pie.title = "License Type Distribution"; pie.style = 10; pie.width = 14; pie.height = 10
+            pie.legend.position = 'b'
+            ca = Reference(ws, min_col=1, min_row=cr + 1, max_row=cr + len(lic_data))
+            d = Reference(ws, min_col=2, min_row=cr + 1, max_row=cr + len(lic_data))
+            pie.add_data(d, titles_from_data=False); pie.set_categories(ca)
+            pie.dataLabels = DataLabelList()
+            pie.dataLabels.showPercent = True; pie.dataLabels.showVal = True; pie.dataLabels.showCatName = True
+            ws.add_chart(pie, f"A{cr + len(lic_data) + 1}")
+
+        # Optimization Opportunities
+        opt_row = cr + len(lic_data) + 2
+        ws.cell(row=opt_row, column=4, value="LICENSE OPTIMIZATION OPPORTUNITIES").font = Font(
+            name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        opt_row += 1
+        self._write_headers(ws, opt_row, ["", "", "", "User", "Current License", "Issue", "Recommendation", "Savings Potential"],
+                            [0, 0, 0, 22, 20, 30, 35, 16])
+        opt_count = 0
+        for u in self.users:
+            issues = []
+            if not u.is_active and u.access_level in ("Visual Studio Enterprise", "Visual Studio Professional", "Basic"):
+                issues.append(("Inactive premium license", "Downgrade to Stakeholder or remove", "High"))
+            if u.last_accessed:
+                days = (now - u.last_accessed).days
+                if days > 60 and u.access_level in ("Visual Studio Enterprise", "Visual Studio Professional"):
+                    issues.append((f"Premium license idle {days} days", "Review and potentially downgrade", "Medium"))
+            # Check for stakeholder in high-perm groups
+            if u.access_level == "Stakeholder":
+                group_map = {g.descriptor: g for g in self.groups}
+                for gd in u.group_memberships:
+                    g = group_map.get(gd)
+                    if g and "contributor" in g.display_name.lower():
+                        issues.append(("Stakeholder in contributor group", "Upgrade license or remove from group", "Low"))
+                        break
+            for issue, rec, savings in issues:
+                r = opt_row + 1 + opt_count
+                ws.cell(row=r, column=4, value=u.display_name).border = _border()
+                ws.cell(row=r, column=5, value=u.access_level).border = _border()
+                ws.cell(row=r, column=6, value=issue).border = _border()
+                ws.cell(row=r, column=7, value=rec).border = _border()
+                c_sav = ws.cell(row=r, column=8, value=savings)
+                c_sav.border = _border(); c_sav.alignment = _center()
+                if savings == "High":
+                    c_sav.fill = PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid")
+                elif savings == "Medium":
+                    c_sav.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+                opt_count += 1
+
+        if opt_count == 0:
+            ws.cell(row=opt_row + 1, column=4, value="No optimization opportunities identified.").font = Font(
+                name="Calibri", italic=True, color=Colors.DARK_GRAY)
+
+        ws.column_dimensions["D"].width = 22
+        ws.column_dimensions["E"].width = 20
+
     # ---- Sheet 5: Groups Overview ----
 
     def _create_groups_overview(self):
@@ -840,6 +1229,121 @@ class ExcelReportGenerator:
         bar.series[0].graphicalProperties.solidFill = Colors.ACCENT
         bar.legend.position = 'b'
         ws.add_chart(bar, f"E{cr + max(3, len(self.groups)) + 1}")
+
+    # ---- Sheet: Group Hierarchy & Risk ----
+
+    def _create_group_hierarchy(self):
+        ws = self.wb.create_sheet("Group Hierarchy & Risk")
+        ws.sheet_properties.tabColor = Colors.PRIMARY_LIGHT
+        gr = self.gov
+        user_insights = self._compute_user_insights()
+
+        self._write_title(ws, 1, 1, "Group Hierarchy, Membership & Risk Analysis", 16)
+        ws.merge_cells("A1:K1")
+        ws.cell(row=2, column=1,
+            value="Security group risk assessment: member composition, permission coverage, nesting, and governance flags."
+        ).font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY, italic=True)
+        ws.merge_cells("A2:K2")
+
+        # Group risk table
+        row = 4
+        ws.cell(row=row, column=1, value="GROUP RISK ASSESSMENT").font = Font(
+            name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        row += 1
+        headers = ["Group", "Type", "Members", "Users", "Nested Groups", "Inactive Members",
+                   "Permission Count", "Services", "Risk Flags", "Risk Level"]
+        widths = [26, 10, 10, 8, 14, 16, 16, 28, 32, 12]
+        self._write_headers(ws, row, headers, widths)
+
+        for i, g in enumerate(self.groups):
+            r = row + 1 + i
+            member_count = g.member_count or len(g.members)
+            user_members = [m for m in g.members if m.member_type == "user"]
+            group_members = [m for m in g.members if m.member_type == "group"]
+            inactive_members = [m for m in g.members if not m.is_active]
+
+            # Count permissions for this group
+            perm_count = 0
+            svc_set = set()
+            for svc in self.permissions.all_services():
+                sp = self.permissions.get_by_service(svc)
+                for p in sp.permissions:
+                    if p.identity_descriptor == g.descriptor:
+                        perm_count += 1
+                        svc_set.add(svc)
+
+            # Risk flags
+            flags = []
+            if member_count == 0:
+                flags.append("Empty")
+            if member_count > 15:
+                flags.append("Large")
+            if len(inactive_members) > 0:
+                flags.append(f"{len(inactive_members)} inactive")
+            if "Administrator" in g.display_name and g.group_type == "Custom":
+                flags.append("Custom admin")
+            if perm_count > 20:
+                flags.append("High perm count")
+
+            risk = "High" if len(flags) >= 3 else "Medium" if len(flags) >= 1 else "Low"
+
+            self._write_row(ws, r, [
+                g.display_name, g.group_type, member_count, len(user_members),
+                len(group_members), len(inactive_members), perm_count,
+                ", ".join(sorted(svc_set)) if svc_set else "None",
+                ", ".join(flags) if flags else "No issues",
+                risk,
+            ], alt=i % 2 == 1)
+
+            # Color risk level
+            rc = ws.cell(row=r, column=10)
+            rc.alignment = _center()
+            if risk == "High":
+                rc.fill = PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid")
+                rc.font = Font(name="Calibri", bold=True, color=Colors.DENY_TEXT)
+            elif risk == "Medium":
+                rc.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+            else:
+                rc.fill = PatternFill(start_color=Colors.ALLOW, end_color=Colors.ALLOW, fill_type="solid")
+
+        last_row = row + len(self.groups)
+        ws.auto_filter.ref = f"A{row}:{get_column_letter(len(headers))}{last_row}"
+        ws.freeze_panes = f"A{row + 1}"
+
+        # Group membership matrix (User -> Groups)
+        mx_row = last_row + 3
+        ws.cell(row=mx_row, column=1, value="USER-GROUP MEMBERSHIP MATRIX").font = Font(
+            name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
+        mx_row += 1
+        # Header row
+        hcell = ws.cell(row=mx_row, column=1, value="User")
+        hcell.font = _hf(); hcell.fill = _hfill(); hcell.border = _border()
+        ws.column_dimensions["A"].width = 22
+        for gi, g in enumerate(self.groups):
+            col = gi + 2
+            cell = ws.cell(row=mx_row, column=col, value=g.display_name)
+            cell.font = Font(name="Calibri", size=9, bold=True, color=Colors.WHITE)
+            cell.fill = _hfill()
+            cell.alignment = Alignment(horizontal="center", text_rotation=45, wrap_text=True)
+            cell.border = _border()
+            ws.column_dimensions[get_column_letter(col)].width = 14
+
+        group_descriptor_map = {g.descriptor: g for g in self.groups}
+        for ui, u in enumerate(self.users):
+            r = mx_row + 1 + ui
+            ws.cell(row=r, column=1, value=u.display_name).font = Font(name="Calibri", size=10, bold=True)
+            ws.cell(row=r, column=1).border = _border()
+            for gi, g in enumerate(self.groups):
+                col = gi + 2
+                cell = ws.cell(row=r, column=col)
+                cell.border = _border(); cell.alignment = _center()
+                if g.descriptor in u.group_memberships:
+                    cell.value = "YES"
+                    cell.fill = PatternFill(start_color=Colors.ALLOW, end_color=Colors.ALLOW, fill_type="solid")
+                    cell.font = Font(name="Calibri", size=9, bold=True, color=Colors.ALLOW_TEXT)
+                else:
+                    cell.value = ""
+                    cell.fill = PatternFill(start_color=Colors.NOT_SET, end_color=Colors.NOT_SET, fill_type="solid")
 
     # ---- Sheet 6: Group Members ----
 
@@ -983,9 +1487,37 @@ class ExcelReportGenerator:
         ).font = Font(name="Calibri", size=10, color=Colors.DARK_GRAY, italic=True)
         ws.merge_cells("A2:I2")
 
-        # --- Permission State Legend at top ---
-        legend_row = 2
-        legend_start_col = 11  # Column K
+        # --- Summary cards at top ---
+        all_perms = []
+        for svc in self.permissions.all_services():
+            sp = self.permissions.get_by_service(svc)
+            for p in sp.permissions:
+                all_perms.append((svc, p))
+
+        total_allow = sum(1 for _, p in all_perms if p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW))
+        total_deny = sum(1 for _, p in all_perms if p.state in (PermissionState.DENY, PermissionState.INHERITED_DENY))
+        total_inherited = sum(1 for _, p in all_perms if p.is_inherited)
+        total_direct = len(all_perms) - total_inherited
+        unique_identities = len(set(p.identity_name for _, p in all_perms))
+        unique_resources = len(set(p.resource_label for _, p in all_perms))
+        unique_services = len(set(s for s, _ in all_perms))
+
+        row = 4
+        for ci, (lbl, val, clr) in enumerate([
+            ("Total Perms", len(all_perms), Colors.ACCENT),
+            ("Allow", total_allow, Colors.SUCCESS),
+            ("Deny", total_deny, Colors.DANGER if total_deny > 0 else Colors.SUCCESS),
+            ("Inherited", total_inherited, Colors.ACCENT),
+            ("Direct", total_direct, Colors.PRIMARY),
+            ("Identities", unique_identities, Colors.ACCENT),
+            ("Resources", unique_resources, Colors.ACCENT),
+            ("Services", unique_services, Colors.PRIMARY),
+        ]):
+            self._metric_card(ws, row, ci + 1, lbl, val, clr)
+
+        # --- Permission State Legend ---
+        legend_row = row
+        legend_start_col = 10
         ws.cell(row=legend_row, column=legend_start_col, value="STATE LEGEND:").font = Font(name="Calibri", size=9, bold=True, color=Colors.PRIMARY)
         legend_items = [
             ("Allow", PermissionState.ALLOW),
@@ -995,24 +1527,29 @@ class ExcelReportGenerator:
             ("Not Set", PermissionState.NOT_SET),
         ]
         for li, (lbl, st) in enumerate(legend_items):
-            c = ws.cell(row=legend_row, column=legend_start_col + 1 + li, value=lbl)
+            c = ws.cell(row=legend_row + 1, column=legend_start_col + li, value=lbl)
             c.fill = PERM_STATE_FILLS.get(st, PatternFill())
             c.font = PERM_STATE_FONTS.get(st, Font())
             c.alignment = _center()
             c.border = _border()
-            ws.column_dimensions[get_column_letter(legend_start_col + 1 + li)].width = 16
+            ws.column_dimensions[get_column_letter(legend_start_col + li)].width = 16
+
+        # --- Service color legend ---
+        svc_colors = {"Repos": "D6E4F0", "Pipelines": "E2EFDA", "Release": "FCE4D6",
+                      "Project": "DDEBF7", "Boards": "FFF2CC"}
+        ws.cell(row=legend_row, column=legend_start_col + 5, value="SERVICE COLORS:").font = Font(name="Calibri", size=9, bold=True, color=Colors.PRIMARY)
+        for si, (svc_name, svc_clr) in enumerate(svc_colors.items()):
+            c = ws.cell(row=legend_row + 1, column=legend_start_col + 5 + si, value=svc_name)
+            c.fill = PatternFill(start_color=svc_clr, end_color=svc_clr, fill_type="solid")
+            c.alignment = _center(); c.border = _border()
+            c.font = Font(name="Calibri", size=9, bold=True)
+            ws.column_dimensions[get_column_letter(legend_start_col + 5 + si)].width = 12
 
         # --- Main permissions table ---
-        row = 4
+        row = 7
         headers = ["Service", "Identity", "Resource", "Permission", "State", "Inherited", "Resource Type", "Namespace", "Source"]
         widths = [14, 24, 28, 30, 18, 12, 16, 22, 20]
         self._write_headers(ws, row, headers, widths)
-
-        all_perms = []
-        for svc in self.permissions.all_services():
-            sp = self.permissions.get_by_service(svc)
-            for p in sp.permissions:
-                all_perms.append((svc, p))
 
         # Sort: service, then identity, then resource
         all_perms.sort(key=lambda x: (x[0], x[1].identity_name, x[1].resource_label, x[1].permission_name))
@@ -1020,47 +1557,46 @@ class ExcelReportGenerator:
         for i, (svc, p) in enumerate(all_perms):
             r = row + 1 + i
             state_str = p.state.value.replace("_", " ").title()
-            # Determine resource type from token pattern
             resource_type = self._resource_type_from_token(p.resource_token)
             self._write_row(ws, r, [
                 svc, p.identity_name, p.resource_label, p.permission_name,
                 state_str, "Yes" if p.is_inherited else "No",
                 resource_type, p.namespace_name, p.source,
             ], alt=i % 2 == 1)
-            # Color-code the State column
+            # Color-code State
             sf = PERM_STATE_FILLS.get(p.state)
             sff = PERM_STATE_FONTS.get(p.state)
             if sf:
                 ws.cell(row=r, column=5).fill = sf
             if sff:
                 ws.cell(row=r, column=5).font = sff
-            # Color-code service column
-            svc_colors = {"Repos": "D6E4F0", "Pipelines": "E2EFDA", "Release": "FCE4D6",
-                          "Project": "DDEBF7", "Boards": "FFF2CC"}
+            # Color-code service
             svc_fill = svc_colors.get(svc)
             if svc_fill:
                 ws.cell(row=r, column=1).fill = PatternFill(start_color=svc_fill, end_color=svc_fill, fill_type="solid")
+            # Highlight high-risk permissions
+            if p.permission_name in ("Administer", "Force push", "Bypass policies",
+                                     "Delete build pipeline", "Manage release approvers"):
+                ws.cell(row=r, column=4).fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+                ws.cell(row=r, column=4).font = Font(name="Calibri", size=10, bold=True)
 
-        # Apply auto-filter to the table
         last_data_row = row + len(all_perms)
         if all_perms:
             ws.auto_filter.ref = f"A{row}:{get_column_letter(len(headers))}{last_data_row}"
-            # Freeze panes: freeze below header row
             ws.freeze_panes = f"A{row + 1}"
 
-        # --- Summary section below main table ---
+        # --- Summary by service ---
         summary_row = last_data_row + 3
         ws.cell(row=summary_row, column=1, value="PERMISSION SUMMARY BY SERVICE").font = Font(
             name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
-
         summary_row += 1
-        self._write_headers(ws, summary_row, ["Service", "Total", "Allow", "Deny", "Inherited", "Direct"],
-                            widths=[14, 10, 10, 10, 12, 10])
+        self._write_headers(ws, summary_row, ["Service", "Total", "Allow", "Deny", "Inherited", "Direct", "High-Risk"],
+                            widths=[14, 10, 10, 10, 12, 10, 12])
 
         svc_stats: Dict[str, Dict[str, int]] = {}
         for svc, p in all_perms:
             if svc not in svc_stats:
-                svc_stats[svc] = {"total": 0, "allow": 0, "deny": 0, "inherited": 0, "direct": 0}
+                svc_stats[svc] = {"total": 0, "allow": 0, "deny": 0, "inherited": 0, "direct": 0, "high_risk": 0}
             svc_stats[svc]["total"] += 1
             if p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW):
                 svc_stats[svc]["allow"] += 1
@@ -1070,52 +1606,65 @@ class ExcelReportGenerator:
                 svc_stats[svc]["inherited"] += 1
             else:
                 svc_stats[svc]["direct"] += 1
+            if p.permission_name in ("Administer", "Force push", "Bypass policies",
+                                     "Delete build pipeline", "Manage release approvers"):
+                svc_stats[svc]["high_risk"] += 1
 
         svc_names_sorted = sorted(svc_stats.keys())
         for j, svc in enumerate(svc_names_sorted):
             r = summary_row + 1 + j
             st = svc_stats[svc]
-            self._write_row(ws, r, [svc, st["total"], st["allow"], st["deny"], st["inherited"], st["direct"]],
+            self._write_row(ws, r, [svc, st["total"], st["allow"], st["deny"], st["inherited"], st["direct"], st["high_risk"]],
                             alt=j % 2 == 1)
             if st["deny"] > 0:
                 ws.cell(row=r, column=4).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            if st["high_risk"] > 0:
+                ws.cell(row=r, column=7).fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
 
-        # --- Stacked bar chart: Permission distribution per service ---
+        # Stacked bar chart
         if svc_names_sorted:
             chart_data_row = summary_row
             bar = BarChart()
-            bar.type = "col"
-            bar.grouping = "stacked"
-            bar.style = 10
+            bar.type = "col"; bar.grouping = "stacked"; bar.style = 10
             bar.title = "Permission Distribution by Service"
-            bar.y_axis.title = "Count"
-            bar.x_axis.title = "Service"
-            bar.width = 20
-            bar.height = 12
-            bar.legend.position = 'b'
+            bar.y_axis.title = "Count"; bar.x_axis.title = "Service"
+            bar.width = 20; bar.height = 12; bar.legend.position = 'b'
             ca = Reference(ws, min_col=1, min_row=chart_data_row + 2, max_row=chart_data_row + len(svc_names_sorted) + 1)
-            # Allow series
-            d_allow = Reference(ws, min_col=3, min_row=chart_data_row + 1, max_row=chart_data_row + len(svc_names_sorted) + 1)
-            bar.add_data(d_allow, titles_from_data=True)
-            bar.series[0].graphicalProperties.solidFill = Colors.SUCCESS
-            # Deny series
-            d_deny = Reference(ws, min_col=4, min_row=chart_data_row + 1, max_row=chart_data_row + len(svc_names_sorted) + 1)
-            bar.add_data(d_deny, titles_from_data=True)
-            bar.series[1].graphicalProperties.solidFill = Colors.DANGER
-            # Inherited series
-            d_inh = Reference(ws, min_col=5, min_row=chart_data_row + 1, max_row=chart_data_row + len(svc_names_sorted) + 1)
-            bar.add_data(d_inh, titles_from_data=True)
-            bar.series[2].graphicalProperties.solidFill = Colors.ACCENT
+            for ci, (cn, clr, _) in enumerate([(3, Colors.SUCCESS, "Allow"), (4, Colors.DANGER, "Deny"), (5, Colors.ACCENT, "Inherited")]):
+                d = Reference(ws, min_col=cn, min_row=chart_data_row + 1, max_row=chart_data_row + len(svc_names_sorted) + 1)
+                bar.add_data(d, titles_from_data=True)
+                bar.series[ci].graphicalProperties.solidFill = clr
             bar.set_categories(ca)
-            ws.add_chart(bar, f"H{summary_row}")
+            ws.add_chart(bar, f"I{summary_row}")
 
-        # --- Identity summary (right of service summary) ---
-        id_summary_row = summary_row
-        ws.cell(row=id_summary_row, column=8, value="PERMISSIONS BY IDENTITY").font = Font(
+        # --- Resource summary ---
+        res_row = summary_row + len(svc_names_sorted) + 2
+        ws.cell(row=res_row, column=1, value="PERMISSIONS BY RESOURCE").font = Font(
             name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
-        ws.merge_cells(start_row=id_summary_row, start_column=8, end_row=id_summary_row, end_column=9)
+        res_row += 1
+        self._write_headers(ws, res_row, ["Resource", "Service", "Identities", "Allow", "Deny", "Total"],
+                            widths=[28, 14, 12, 10, 10, 10])
+        res_stats: Dict[str, Dict] = {}
+        for svc, p in all_perms:
+            key = p.resource_label
+            if key not in res_stats:
+                res_stats[key] = {"service": svc, "identities": set(), "allow": 0, "deny": 0, "total": 0}
+            res_stats[key]["identities"].add(p.identity_name)
+            res_stats[key]["total"] += 1
+            if p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW):
+                res_stats[key]["allow"] += 1
+            if p.state in (PermissionState.DENY, PermissionState.INHERITED_DENY):
+                res_stats[key]["deny"] += 1
 
-        # Build per-user totals using permission_report if available
+        for j, (res, data) in enumerate(sorted(res_stats.items(), key=lambda x: x[1]["total"], reverse=True)):
+            r = res_row + 1 + j
+            self._write_row(ws, r, [res, data["service"], len(data["identities"]),
+                                    data["allow"], data["deny"], data["total"]], alt=j % 2 == 1)
+            if data["deny"] > 0:
+                ws.cell(row=r, column=5).fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+        # User distribution chart
+        ucr = res_row + len(res_stats) + 2
         user_totals: Dict[str, Dict[str, int]] = {}
         if self.permission_report and self.permission_report.matrices:
             for sn, sm in self.permission_report.matrices.items():
@@ -1124,10 +1673,7 @@ class ExcelReportGenerator:
                         user_totals[un] = {"allow": 0, "deny": 0, "inherited": 0}
                     for k in ("allow", "deny", "inherited"):
                         user_totals[un][k] += summary.get(k, 0)
-
         if user_totals:
-            # Place user chart data below the service chart
-            ucr = summary_row + len(svc_names_sorted) + 16
             ws.cell(row=ucr, column=1, value="PERMISSION DISTRIBUTION PER USER").font = Font(
                 name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
             ucr += 1
@@ -1135,7 +1681,6 @@ class ExcelReportGenerator:
             ws.cell(row=ucr, column=2, value="Allow").font = Font(bold=True)
             ws.cell(row=ucr, column=3, value="Deny").font = Font(bold=True)
             ws.cell(row=ucr, column=4, value="Inherited").font = Font(bold=True)
-
             data_users = [u for u in user_totals if any(v > 0 for v in user_totals[u].values())]
             for j, uname in enumerate(data_users):
                 r = ucr + 1 + j
@@ -1143,18 +1688,12 @@ class ExcelReportGenerator:
                 ws.cell(row=r, column=2, value=user_totals[uname]["allow"])
                 ws.cell(row=r, column=3, value=user_totals[uname]["deny"])
                 ws.cell(row=r, column=4, value=user_totals[uname]["inherited"])
-
             if data_users:
                 bar2 = BarChart()
-                bar2.type = "col"
-                bar2.grouping = "stacked"
-                bar2.style = 10
+                bar2.type = "col"; bar2.grouping = "stacked"; bar2.style = 10
                 bar2.title = "Permission Distribution per User"
-                bar2.y_axis.title = "Count"
-                bar2.x_axis.title = "User"
-                bar2.width = 20
-                bar2.height = 12
-                bar2.legend.position = 'b'
+                bar2.y_axis.title = "Count"; bar2.x_axis.title = "User"
+                bar2.width = 20; bar2.height = 12; bar2.legend.position = 'b'
                 ca2 = Reference(ws, min_col=1, min_row=ucr + 1, max_row=ucr + len(data_users))
                 for ci, (cn, clr) in enumerate([(2, Colors.SUCCESS), (3, Colors.DANGER), (4, Colors.ACCENT)]):
                     d = Reference(ws, min_col=cn, min_row=ucr, max_row=ucr + len(data_users))
