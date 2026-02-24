@@ -11,7 +11,7 @@ import os
 import re
 import yaml
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 
@@ -27,6 +27,7 @@ class OptionsConfig:
     """Report options configuration."""
     include_inherited: bool = True
     include_disabled_users: bool = False
+    allow_org_fallback: bool = False
     namespaces: List[str] = field(default_factory=lambda: [
         "Project",
         "Git Repositories",
@@ -40,6 +41,7 @@ class OptionsConfig:
     ])
     rate_limit: int = 10
     timeout: int = 30
+    governance_thresholds: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -65,9 +67,11 @@ class Config:
         options = OptionsConfig(
             include_inherited=options_data.get("include_inherited", True),
             include_disabled_users=options_data.get("include_disabled_users", False),
+            allow_org_fallback=options_data.get("allow_org_fallback", False),
             namespaces=options_data.get("namespaces", OptionsConfig().namespaces),
             rate_limit=options_data.get("rate_limit", 10),
             timeout=options_data.get("timeout", 30),
+            governance_thresholds=options_data.get("governance_thresholds", {}),
         )
         
         return cls(

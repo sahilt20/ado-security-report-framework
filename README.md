@@ -17,8 +17,12 @@ This framework is designed for **Project-level Administrators**:
 
 - **Data Governance Analysis**: Risk scoring, compliance controls, policy violation detection
 - **Governance Scoring**: Overall score (A-F grade) across 5 governance dimensions
-- **Compliance Controls**: 10 automated compliance checks with Pass/Warning/Fail status
+- **Compliance Controls**: 11 automated compliance checks with Pass/Warning/Fail status
 - **Risk Findings**: Categorized findings with Critical/High/Medium/Low severity
+- **Simple Governance Measures**: Easy-read KPI-style measures with Good/Watch/Risk status
+- **Top Action Plan**: Prioritized top-5 remediation actions generated from findings
+- **One-Page Executive Summary**: Compact HTML and CSV outputs for leadership review
+- **Configurable Measure Thresholds**: Tune Good/Watch/Risk cutoffs to your governance policy
 - **Permission Matrix**: Visual user-permission heatmap with conditional formatting
 - **Inheritance Tracking**: Direct vs inherited permissions with conflict detection
 - **Branch Policy Checks**: Detects policy bypass permissions on non-admin groups
@@ -28,6 +32,7 @@ This framework is designed for **Project-level Administrators**:
 - **Dual Output**: Professional Excel workbook (12+ sheets) AND interactive HTML dashboard
 - **Separation of Duties**: Detects combined admin roles and overprivileged accounts
 - **Lifecycle Management**: Stale account detection, inactive user flagging
+- **Scope Assurance**: Verifies whether report stayed in project-admin scope or used org fallback
 
 ## Installation
 
@@ -48,6 +53,10 @@ python main.py --org "your-org" --project "your-project" --pat "your-pat" --form
 
 # HTML dashboard only
 python main.py --org "your-org" --project "your-project" --pat "your-pat" --format html
+
+# Include one-page executive summary outputs (CSV + HTML)
+python main.py --org "your-org" --project "your-project" --pat "your-pat" \
+    --format html --executive-summary-format both
 
 # Using config file
 python main.py --config config.yaml
@@ -72,6 +81,16 @@ output:
 options:
   include_inherited: true
   include_disabled_users: false
+  governance_thresholds:
+    admin_users_good_max: 2
+    admin_users_watch_max: 4
+    direct_permission_ratio_good_max: 35
+    direct_permission_ratio_watch_max: 55
+    high_risk_grants_good_max: 0
+    high_risk_grants_watch_max: 3
+    stale_access_watch_pct_max: 8
+    data_completeness_good_min: 92
+    data_completeness_watch_min: 80
 ```
 
 ## PAT Permissions Required
@@ -109,6 +128,7 @@ The framework automatically uses project-scoped APIs accessible to Project Admin
 | GOV-008 | Branch Policy Enforcement | Branch policy bypasses limited to admins |
 | GOV-009 | Pipeline Security Controls | Destructive pipeline permissions controlled |
 | GOV-010 | License Optimization | No wasted premium licenses on inactive users |
+| GOV-011 | Project-Scope Boundary Assurance | Report uses project-level APIs only |
 
 ## Excel Report Sheets
 

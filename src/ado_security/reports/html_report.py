@@ -36,6 +36,9 @@ class HTMLReportGenerator:
         permissions: GranularPermissions,
         permission_report: Optional[FullPermissionReport] = None,
         inheritance_analyzer: Optional[InheritanceAnalyzer] = None,
+        collection_mode: str = "unknown",
+        project_scope_only: bool = True,
+        measure_thresholds: Optional[Dict[str, float]] = None,
     ):
         self.organization = organization
         self.project = project
@@ -44,10 +47,16 @@ class HTMLReportGenerator:
         self.permissions = permissions
         self.permission_report = permission_report
         self.inheritance_analyzer = inheritance_analyzer
+        self.collection_mode = collection_mode
+        self.project_scope_only = project_scope_only
+        self.measure_thresholds = measure_thresholds or {}
 
         gov = GovernanceAnalyzer(
             groups=groups, users=users, granular_permissions=permissions,
             organization=organization, project=project,
+            collection_mode=collection_mode,
+            project_scope_only=project_scope_only,
+            measure_thresholds=self.measure_thresholds,
         )
         self.gov: GovernanceReport = gov.analyze()
 
@@ -158,7 +167,8 @@ class HTMLReportGenerator:
 
         access_levels: Dict[str, int] = {}
         for u in self.users:
-            access_levels[u.access_level] = access_levels.get(u.access_level, 0) + 1
+            level = u.access_level or "Unknown"
+            access_levels[level] = access_levels.get(level, 0) + 1
         access_data = json.dumps({
             "labels": list(access_levels.keys()),
             "data": list(access_levels.values()),
@@ -219,7 +229,7 @@ class HTMLReportGenerator:
             <tr class="{status_cls}">
                 <td>{u.display_name}</td>
                 <td>{u.mail_address}</td>
-                <td>{u.access_level}</td>
+                <td>{u.access_level or "Unknown"}</td>
                 <td>{"Active" if u.is_active else "Inactive"}</td>
                 <td>{u.last_accessed.strftime('%Y-%m-%d') if u.last_accessed else 'Never'}</td>
             </tr>"""
@@ -237,6 +247,32 @@ class HTMLReportGenerator:
             </tr>"""
 
         grade_color = self._grade_color(score.grade)
+        scope_status = "Project-Only" if g.project_scope_only else "Org Fallback Used"
+        scope_color = "#28A745" if g.project_scope_only else "#DC3545"
+
+        status_colors = {"Good": "#28A745", "Watch": "#FFC107", "Risk": "#DC3545"}
+        measures_rows = ""
+        for m in g.simple_measures:
+            m_color = status_colors.get(m.status, "#9E9E9E")
+            measures_rows += f"""
+            <tr>
+                <td><strong>{m.label}</strong></td>
+                <td>{m.value}</td>
+                <td><span class="badge" style="background:{m_color};color:#fff">{m.status}</span></td>
+                <td class="desc">{m.description}</td>
+            </tr>"""
+
+        actions_rows = ""
+        for a in g.top_actions:
+            a_color = self._risk_color(a.risk_level)
+            actions_rows += f"""
+            <tr>
+                <td>{a.priority}</td>
+                <td><span class="badge" style="background:{a_color};color:#fff">{a.risk_level}</span></td>
+                <td>{a.category}</td>
+                <td>{a.action}</td>
+                <td class="desc">{a.rationale}</td>
+            </tr>"""
 
         return f"""<!DOCTYPE html>
 <html lang="en">
@@ -288,12 +324,13 @@ tr.inactive td {{ opacity: 0.6; }}
 <body>
 <div class="header">
     <h1>Azure DevOps Project-Level Data Governance Report</h1>
-    <p>Organization: {self.organization} &bull; Project: {self.project} &bull; Scope: Project Admin &bull; Generated: {g.generated_at.strftime('%Y-%m-%d %H:%M')}</p>
+    <p>Organization: {self.organization} &bull; Project: {self.project} &bull; Scope: {scope_status} &bull; Collection: {g.collection_mode} &bull; Generated: {g.generated_at.strftime('%Y-%m-%d %H:%M')}</p>
 </div>
 
 <div class="container">
 <div class="nav">
     <a href="#" onclick="showSection('dashboard')" class="active" id="nav-dashboard">Dashboard</a>
+    <a href="#" onclick="showSection('actions')" id="nav-actions">Action Plan</a>
     <a href="#" onclick="showSection('scores')" id="nav-scores">Governance Scores</a>
     <a href="#" onclick="showSection('controls')" id="nav-controls">Compliance Controls</a>
     <a href="#" onclick="showSection('findings')" id="nav-findings">Risk Findings ({len(g.findings)})</a>
@@ -331,6 +368,14 @@ tr.inactive td {{ opacity: 0.6; }}
         <div class="value" style="color:{'#FFC107' if g.external_users > 0 else '#28A745'}">{g.external_users}</div>
     </div>
     <div class="card">
+        <div class="label">Data Scope</div>
+        <div class="value" style="font-size:22px;color:{scope_color}">{scope_status}</div>
+    </div>
+    <div class="card">
+        <div class="label">Data Completeness</div>
+        <div class="value" style="color:{'#28A745' if g.data_completeness_score >= 90 else '#FF9800' if g.data_completeness_score >= 70 else '#DC3545'}">{g.data_completeness_score}%</div>
+    </div>
+    <div class="card">
         <div class="label">Security Groups</div>
         <div class="value">{g.total_groups}</div>
     </div>
@@ -348,6 +393,14 @@ tr.inactive td {{ opacity: 0.6; }}
     </div>
 </div>
 
+<div class="table-container">
+    <h3>Simple Governance Measures (Easy Read)</h3>
+    <table>
+        <thead><tr><th>Measure</th><th>Value</th><th>Status</th><th>Why It Matters</th></tr></thead>
+        <tbody>{measures_rows}</tbody>
+    </table>
+</div>
+
 <div class="chart-grid">
     <div class="chart-box"><h3>Findings by Risk Level</h3><canvas id="chartFindingsRisk"></canvas></div>
     <div class="chart-box"><h3>Permissions by Service</h3><canvas id="chartPermsByService"></canvas></div>
@@ -355,6 +408,17 @@ tr.inactive td {{ opacity: 0.6; }}
     <div class="chart-box"><h3>Access Level Distribution</h3><canvas id="chartAccessLevels"></canvas></div>
     <div class="chart-box"><h3>Members per Group</h3><canvas id="chartGroupMembers"></canvas></div>
     <div class="chart-box"><h3>Governance Score Radar</h3><canvas id="chartRadar"></canvas></div>
+</div>
+</div>
+
+<!-- ==================== ACTION PLAN ==================== -->
+<div id="actions" class="section">
+<div class="table-container">
+    <h3>Top Governance Actions</h3>
+    <table>
+        <thead><tr><th>Priority</th><th>Risk</th><th>Category</th><th>Action</th><th>Why Now</th></tr></thead>
+        <tbody>{actions_rows}</tbody>
+    </table>
 </div>
 </div>
 

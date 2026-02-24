@@ -48,6 +48,19 @@ RISK_SCORES = {
     RiskLevel.INFO: 0,
 }
 
+# --- Tunable thresholds for simple governance measures ---
+DEFAULT_MEASURE_THRESHOLDS = {
+    "admin_users_good_max": 2,
+    "admin_users_watch_max": 4,
+    "direct_permission_ratio_good_max": 35.0,
+    "direct_permission_ratio_watch_max": 55.0,
+    "high_risk_grants_good_max": 0,
+    "high_risk_grants_watch_max": 3,
+    "stale_access_watch_pct_max": 8.0,
+    "data_completeness_good_min": 92.0,
+    "data_completeness_watch_min": 80.0,
+}
+
 
 # --- Governance Data Models ---
 
@@ -74,6 +87,25 @@ class ComplianceControl:
     status: str = "N/A"  # "Pass", "Fail", "Warning", "N/A"
     findings: List[GovernanceFinding] = field(default_factory=list)
     score: float = 0.0  # 0-100
+
+
+@dataclass
+class GovernanceMeasure:
+    """Simple governance measure for executive reporting."""
+    label: str
+    value: str
+    status: str  # Good, Watch, Risk
+    description: str
+
+
+@dataclass
+class GovernanceAction:
+    """Prioritized governance action item."""
+    priority: int
+    category: str
+    action: str
+    rationale: str
+    risk_level: str
 
 
 @dataclass
@@ -108,6 +140,12 @@ class GovernanceReport:
     score: GovernanceScore = field(default_factory=GovernanceScore)
     findings: List[GovernanceFinding] = field(default_factory=list)
     controls: List[ComplianceControl] = field(default_factory=list)
+    collection_mode: str = "unknown"
+    project_scope_only: bool = True
+    scope_statement: str = ""
+    data_completeness_score: float = 0.0
+    simple_measures: List[GovernanceMeasure] = field(default_factory=list)
+    top_actions: List[GovernanceAction] = field(default_factory=list)
 
     # Summary metrics
     total_users: int = 0
@@ -126,6 +164,10 @@ class GovernanceReport:
     empty_groups: int = 0
     overprivileged_users: int = 0
     stale_users: int = 0
+    users_without_access_level: int = 0
+    users_without_last_access: int = 0
+    users_without_group_membership: int = 0
+    high_risk_permission_assignments: int = 0
 
     # Service breakdown
     permissions_by_service: Dict[str, int] = field(default_factory=dict)
@@ -200,7 +242,7 @@ class GovernanceAnalyzer:
 
     Performs:
     - Risk scoring per user, group, and service within the project
-    - Compliance control checks (10 controls)
+    - Compliance control checks (11 controls)
     - Policy violation detection
     - Least privilege analysis
     - Branch policy bypass detection
@@ -217,12 +259,28 @@ class GovernanceAnalyzer:
         granular_permissions: GranularPermissions,
         organization: str = "",
         project: str = "",
+        collection_mode: str = "unknown",
+        project_scope_only: bool = True,
+        measure_thresholds: Optional[Dict[str, float]] = None,
     ):
         self.groups = groups
         self.users = users
         self.permissions = granular_permissions
         self.organization = organization
         self.project = project
+        self.collection_mode = collection_mode
+        self.project_scope_only = project_scope_only
+        self.measure_thresholds = DEFAULT_MEASURE_THRESHOLDS.copy()
+        threshold_overrides = measure_thresholds if isinstance(measure_thresholds, dict) else {}
+        if measure_thresholds and not isinstance(measure_thresholds, dict):
+            logger.warning("Ignoring governance thresholds: expected a dictionary of threshold values.")
+        for key, value in threshold_overrides.items():
+            if key not in self.measure_thresholds:
+                continue
+            try:
+                self.measure_thresholds[key] = float(value)
+            except (TypeError, ValueError):
+                logger.warning(f"Ignoring invalid threshold value for '{key}': {value}")
 
         self._groups_by_descriptor = {g.descriptor: g for g in groups}
         self._users_by_descriptor = {u.descriptor: u for u in users}
@@ -240,11 +298,19 @@ class GovernanceAnalyzer:
             organization=self.organization,
             project=self.project,
         )
+        report.collection_mode = self.collection_mode
+        report.project_scope_only = self.project_scope_only
+        report.scope_statement = (
+            "Project-level APIs only"
+            if self.project_scope_only
+            else "Org-level fallback detected; review PAT scope usage"
+        )
 
         # Compute basic metrics
         self._compute_metrics(report)
 
         # Run all checks
+        self._check_scope_boundary(report)
         self._check_admin_access(report)
         self._check_least_privilege(report)
         self._check_separation_of_duties(report)
@@ -259,12 +325,15 @@ class GovernanceAnalyzer:
         self._check_large_groups(report)
         self._check_license_optimization(report)
         self._check_broad_contributor_access(report)
+        self._check_access_data_completeness(report)
 
         # Run compliance controls
         self._run_compliance_controls(report)
 
         # Calculate scores
         self._calculate_scores(report)
+        self._build_simple_measures(report)
+        self._build_top_actions(report)
 
         # Build summaries
         report.findings_by_risk = self._count_by_field(report.findings, "risk_level")
@@ -297,6 +366,23 @@ class GovernanceAnalyzer:
             1 for p in all_perms
             if p.state in (PermissionState.DENY, PermissionState.INHERITED_DENY)
         )
+        report.high_risk_permission_assignments = sum(
+            1 for p in all_perms
+            if p.permission_name in HIGH_RISK_PERMISSIONS
+            and p.state in (PermissionState.ALLOW, PermissionState.INHERITED_ALLOW)
+        )
+        report.users_without_access_level = sum(
+            1 for u in self.users if not (u.access_level or "").strip()
+        )
+        report.users_without_last_access = sum(
+            1 for u in self.users if not u.last_accessed
+        )
+        report.users_without_group_membership = sum(
+            1
+            for u in self.users
+            if not self._user_groups.get(u.descriptor)
+            and not u.group_memberships
+        )
 
         # Permissions by service
         for service in self.permissions.all_services():
@@ -313,6 +399,28 @@ class GovernanceAnalyzer:
                 report.admin_users += 1
             if self._is_external_user(user):
                 report.external_users += 1
+
+    def _check_scope_boundary(self, report: GovernanceReport):
+        """Ensure the analysis stayed within project-level admin scope."""
+        if report.project_scope_only:
+            return
+
+        report.findings.append(GovernanceFinding(
+            category="Data Scope",
+            title="Org-Level Data Fallback Used",
+            description=(
+                "User collection used an org-level fallback path. "
+                "This run is not strictly project-admin scoped."
+            ),
+            risk_level=RiskLevel.HIGH,
+            affected_entity="Collection Scope",
+            entity_type="policy",
+            recommendation=(
+                "Disable org fallback and re-run with project-level collection only "
+                "(omit --allow-org-fallback)."
+            ),
+            details={"collection_mode": report.collection_mode},
+        ))
 
     # ------------------------------------------------------------------
     # Governance Checks
@@ -751,6 +859,59 @@ class GovernanceAnalyzer:
                     details={"resource_count": len(resources), "resources": list(resources)},
                 ))
 
+    def _check_access_data_completeness(self, report: GovernanceReport):
+        """Flag low data quality that can reduce confidence in governance measures."""
+        if report.total_users == 0:
+            return
+
+        no_access_pct = report.users_without_access_level / report.total_users
+        if report.users_without_access_level > 0:
+            report.findings.append(GovernanceFinding(
+                category="Data Quality",
+                title="Users Missing Access Level Metadata",
+                description=(
+                    f"{report.users_without_access_level} user(s) do not have access level data. "
+                    "License and least-privilege analysis may be incomplete."
+                ),
+                risk_level=RiskLevel.MEDIUM if no_access_pct >= 0.3 else RiskLevel.LOW,
+                affected_entity=f"{report.users_without_access_level} users",
+                entity_type="policy",
+                recommendation=(
+                    "Run with entitlements access when possible or verify license data "
+                    "through project-level audit exports."
+                ),
+            ))
+
+        if report.users_without_group_membership > 0:
+            report.findings.append(GovernanceFinding(
+                category="Data Quality",
+                title="Users Not Mapped to Any Security Group",
+                description=(
+                    f"{report.users_without_group_membership} user(s) were not mapped to group membership. "
+                    "Their effective permission paths may not be fully visible."
+                ),
+                risk_level=RiskLevel.MEDIUM if report.users_without_group_membership > 3 else RiskLevel.LOW,
+                affected_entity=f"{report.users_without_group_membership} users",
+                entity_type="policy",
+                recommendation="Review team/group sync to ensure all project users map to security groups.",
+            ))
+
+        if report.users_without_last_access > 0 and report.collection_mode != "org_entitlements":
+            report.findings.append(GovernanceFinding(
+                category="Data Quality",
+                title="Last Access Dates Not Available for Some Users",
+                description=(
+                    f"{report.users_without_last_access} user(s) have no last-access data in "
+                    f"'{report.collection_mode}' collection mode."
+                ),
+                risk_level=RiskLevel.INFO,
+                affected_entity=f"{report.users_without_last_access} users",
+                entity_type="policy",
+                recommendation=(
+                    "Treat stale-account findings as conservative estimates when last access data is unavailable."
+                ),
+            ))
+
     # ------------------------------------------------------------------
     # Compliance Controls
     # ------------------------------------------------------------------
@@ -768,6 +929,7 @@ class GovernanceAnalyzer:
             self._ctrl_branch_policy(report),
             self._ctrl_pipeline_security(report),
             self._ctrl_license_optimization(report),
+            self._ctrl_project_scope(report),
         ]
         report.controls = controls
 
@@ -971,6 +1133,21 @@ class GovernanceAnalyzer:
             ctrl.score = 40
         return ctrl
 
+    def _ctrl_project_scope(self, report: GovernanceReport) -> ComplianceControl:
+        ctrl = ComplianceControl(
+            control_id="GOV-011",
+            control_name="Project-Scope Boundary Assurance",
+            category="Data Scope",
+            description="Report should rely on project-level admin accessible APIs only.",
+        )
+        if report.project_scope_only:
+            ctrl.status = "Pass"
+            ctrl.score = 100
+        else:
+            ctrl.status = "Fail"
+            ctrl.score = 20
+        return ctrl
+
     # ------------------------------------------------------------------
     # Scoring
     # ------------------------------------------------------------------
@@ -988,7 +1165,11 @@ class GovernanceAnalyzer:
             return sum(lst) / len(lst) if lst else 100.0
 
         # Merge related categories into the five governance dimensions
-        ac_cats = cat_scores.get("Access Control", [100]) + cat_scores.get("Branch Policy", [])
+        ac_cats = (
+            cat_scores.get("Access Control", [100])
+            + cat_scores.get("Branch Policy", [])
+            + cat_scores.get("Data Scope", [])
+        )
         lp_cats = cat_scores.get("Least Privilege", [100]) + cat_scores.get("Pipeline Security", []) + cat_scores.get("License Optimization", [])
         score.access_control_score = avg(ac_cats)
         score.least_privilege_score = avg(lp_cats)
@@ -1034,6 +1215,149 @@ class GovernanceAnalyzer:
                 report.risk_by_service[service] = RiskLevel.LOW
             else:
                 report.risk_by_service[service] = RiskLevel.INFO
+
+    def _build_simple_measures(self, report: GovernanceReport):
+        """Build easy-to-read governance measures for executives."""
+        t = self.measure_thresholds
+        total_users = max(report.total_users, 1)
+        total_perms = max(report.total_permissions, 1)
+
+        admin_pct = report.admin_users / total_users * 100
+        direct_pct = report.direct_permissions / total_perms * 100
+        stale_pct = report.stale_users / total_users * 100
+        data_completeness = (
+            (total_users - report.users_without_access_level)
+            + (total_users - report.users_without_last_access)
+        ) / (total_users * 2) * 100
+        report.data_completeness_score = round(data_completeness, 1)
+
+        measures: List[GovernanceMeasure] = [
+            GovernanceMeasure(
+                label="Scope Integrity",
+                value="Project-Only" if report.project_scope_only else "Org Fallback Used",
+                status="Good" if report.project_scope_only else "Risk",
+                description=(
+                    "Confirms this report aligns to project-admin scope."
+                    if report.project_scope_only
+                    else "Org-level fallback weakens strict project-scope governance view."
+                ),
+            ),
+            GovernanceMeasure(
+                label="Admin Coverage",
+                value=f"{report.admin_users}/{report.total_users} ({admin_pct:.0f}%)",
+                status=(
+                    "Good"
+                    if report.admin_users <= t["admin_users_good_max"]
+                    else ("Watch" if report.admin_users <= t["admin_users_watch_max"] else "Risk")
+                ),
+                description="Lower admin coverage reduces privilege abuse blast radius.",
+            ),
+            GovernanceMeasure(
+                label="Direct Permission Ratio",
+                value=f"{direct_pct:.0f}%",
+                status=(
+                    "Good"
+                    if direct_pct <= t["direct_permission_ratio_good_max"]
+                    else ("Watch" if direct_pct <= t["direct_permission_ratio_watch_max"] else "Risk")
+                ),
+                description="Lower direct assignments improve governance consistency via inheritance.",
+            ),
+            GovernanceMeasure(
+                label="High-Risk Grants",
+                value=str(report.high_risk_permission_assignments),
+                status=(
+                    "Good"
+                    if report.high_risk_permission_assignments <= t["high_risk_grants_good_max"]
+                    else (
+                        "Watch"
+                        if report.high_risk_permission_assignments <= t["high_risk_grants_watch_max"]
+                        else "Risk"
+                    )
+                ),
+                description="Tracks dangerous permissions like bypass, force push, and destructive actions.",
+            ),
+            GovernanceMeasure(
+                label="Dormant Access",
+                value=f"{report.stale_users}/{report.total_users} ({stale_pct:.0f}%)",
+                status=(
+                    "Good"
+                    if report.stale_users == 0
+                    else ("Watch" if stale_pct <= t["stale_access_watch_pct_max"] else "Risk")
+                ),
+                description="Stale identities should be removed to prevent unnoticed misuse.",
+            ),
+            GovernanceMeasure(
+                label="Data Completeness",
+                value=f"{report.data_completeness_score:.0f}%",
+                status=(
+                    "Good"
+                    if report.data_completeness_score >= t["data_completeness_good_min"]
+                    else (
+                        "Watch"
+                        if report.data_completeness_score >= t["data_completeness_watch_min"]
+                        else "Risk"
+                    )
+                ),
+                description="Shows confidence level for access, activity, and license-driven measures.",
+            ),
+        ]
+        report.simple_measures = measures
+
+    def _build_top_actions(self, report: GovernanceReport):
+        """Convert findings to a concise top action plan."""
+        if not report.findings:
+            report.top_actions = [
+                GovernanceAction(
+                    priority=1,
+                    category="Governance",
+                    action="Maintain current controls and re-run this report monthly.",
+                    rationale="No findings detected in this run.",
+                    risk_level=RiskLevel.INFO,
+                )
+            ]
+            return
+
+        risk_rank = {
+            RiskLevel.CRITICAL: 0,
+            RiskLevel.HIGH: 1,
+            RiskLevel.MEDIUM: 2,
+            RiskLevel.LOW: 3,
+            RiskLevel.INFO: 4,
+        }
+
+        aggregated: Dict[str, Dict[str, object]] = {}
+        for finding in report.findings:
+            key = finding.recommendation.strip()
+            if key not in aggregated:
+                aggregated[key] = {
+                    "count": 0,
+                    "best_rank": 99,
+                    "risk_level": RiskLevel.INFO,
+                    "category": finding.category,
+                    "action": finding.recommendation,
+                }
+            entry = aggregated[key]
+            entry["count"] = int(entry["count"]) + 1
+            current_rank = risk_rank.get(finding.risk_level, 5)
+            if current_rank < int(entry["best_rank"]):
+                entry["best_rank"] = current_rank
+                entry["risk_level"] = finding.risk_level
+
+        ranked = sorted(
+            aggregated.values(),
+            key=lambda e: (int(e["best_rank"]), -int(e["count"])),
+        )[:5]
+
+        report.top_actions = [
+            GovernanceAction(
+                priority=i + 1,
+                category=str(item["category"]),
+                action=str(item["action"]),
+                rationale=f"{item['count']} related finding(s), highest risk {item['risk_level']}.",
+                risk_level=str(item["risk_level"]),
+            )
+            for i, item in enumerate(ranked)
+        ]
 
     # ------------------------------------------------------------------
     # Helpers

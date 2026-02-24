@@ -32,6 +32,7 @@ from src.ado_security.analyzers import (
     GovernanceAnalyzer,
 )
 from src.ado_security.reports import ExcelReportGenerator, HTMLReportGenerator
+from src.ado_security.reports import ExecutiveSummaryGenerator
 
 
 # Configure logging
@@ -113,9 +114,22 @@ Examples:
     )
 
     parser.add_argument(
+        "--allow-org-fallback",
+        action="store_true",
+        help="Allow org-level user entitlement fallback (disabled by default to keep project-level scope)",
+    )
+
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging",
+    )
+
+    parser.add_argument(
+        "--executive-summary-format",
+        choices=["html", "csv", "both", "none"],
+        default="both",
+        help="Generate one-page executive summary format(s): html, csv, both, or none (default: both)",
     )
 
     return parser.parse_args()
@@ -166,13 +180,19 @@ def main():
 
         # Collect users
         users = []
+        users_collection_mode = "not_collected"
+        project_scope_only = True
         if sections is None or "users" in sections:
             logger.info("Collecting users...")
             users_collector = UsersCollector(
                 client,
                 include_disabled=args.include_disabled or config.options.include_disabled_users,
+                allow_org_fallback=args.allow_org_fallback or config.options.allow_org_fallback,
             )
             users = users_collector.collect()
+            users_collection_mode = users_collector.collection_mode
+            project_scope_only = not users_collector.used_org_fallback
+            logger.info(f"User collection mode: {users_collection_mode}")
 
         # Collect permissions
         granular_permissions = None
@@ -196,6 +216,7 @@ def main():
             inheritance_analyzer = InheritanceAnalyzer(groups, users, granular_permissions)
 
         # Run governance analysis
+        governance_thresholds = config.options.governance_thresholds or {}
         if granular_permissions and groups and users:
             logger.info("Running governance analysis...")
             gov_analyzer = GovernanceAnalyzer(
@@ -204,6 +225,9 @@ def main():
                 granular_permissions=granular_permissions,
                 organization=config.organization,
                 project=config.project,
+                collection_mode=users_collection_mode,
+                project_scope_only=project_scope_only,
+                measure_thresholds=governance_thresholds,
             )
             gov_report = gov_analyzer.analyze()
             logger.info(f"Governance Score: {gov_report.score.overall_score}/100 (Grade: {gov_report.score.grade})")
@@ -223,6 +247,21 @@ def main():
         output_format = args.format
         generated_files = []
 
+        # Generate one-page executive summary
+        if (
+            args.executive_summary_format != "none"
+            and granular_permissions and groups and users
+        ):
+            logger.info("Generating one-page executive summary...")
+            summary_gen = ExecutiveSummaryGenerator(
+                organization=config.organization,
+                project=config.project,
+                governance_report=gov_report,
+            )
+            generated_files.extend(
+                summary_gen.generate(output_base, fmt=args.executive_summary_format)
+            )
+
         # Generate Excel report
         if output_format in ("excel", "both"):
             excel_path = f"{output_base}.xlsx"
@@ -239,6 +278,9 @@ def main():
                 ).GranularPermissions(),
                 permission_report=permission_report,
                 inheritance_analyzer=inheritance_analyzer,
+                collection_mode=users_collection_mode,
+                project_scope_only=project_scope_only,
+                measure_thresholds=governance_thresholds,
             )
             excel_gen.generate(excel_path)
             generated_files.append(("Excel", excel_path))
@@ -258,6 +300,9 @@ def main():
                 ).GranularPermissions(),
                 permission_report=permission_report,
                 inheritance_analyzer=inheritance_analyzer,
+                collection_mode=users_collection_mode,
+                project_scope_only=project_scope_only,
+                measure_thresholds=governance_thresholds,
             )
             html_gen.generate(html_path)
             generated_files.append(("HTML", html_path))

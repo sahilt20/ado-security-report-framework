@@ -144,6 +144,9 @@ class ExcelReportGenerator:
         permissions: GranularPermissions,
         permission_report: Optional[FullPermissionReport] = None,
         inheritance_analyzer: Optional[InheritanceAnalyzer] = None,
+        collection_mode: str = "unknown",
+        project_scope_only: bool = True,
+        measure_thresholds: Optional[Dict[str, float]] = None,
     ):
         self.organization = organization
         self.project = project
@@ -153,10 +156,16 @@ class ExcelReportGenerator:
         self.permissions = permissions
         self.permission_report = permission_report
         self.inheritance_analyzer = inheritance_analyzer
+        self.collection_mode = collection_mode
+        self.project_scope_only = project_scope_only
+        self.measure_thresholds = measure_thresholds or {}
 
         gov = GovernanceAnalyzer(
             groups=groups, users=users, granular_permissions=permissions,
             organization=organization, project=project,
+            collection_mode=collection_mode,
+            project_scope_only=project_scope_only,
+            measure_thresholds=self.measure_thresholds,
         )
         self.gov: GovernanceReport = gov.analyze()
         self.wb: Optional[Workbook] = None
@@ -350,7 +359,7 @@ class ExcelReportGenerator:
             ("Admin Users", gr.admin_users, Colors.DANGER if gr.admin_users > 3 else Colors.ACCENT),
             ("External Users", gr.external_users, Colors.WARNING if gr.external_users > 0 else Colors.SUCCESS),
             ("Total Groups", gr.total_groups, Colors.ACCENT),
-            ("Custom Groups", gr.custom_groups, Colors.ACCENT),
+            ("Data Complete", f"{gr.data_completeness_score:.0f}%", Colors.SUCCESS if gr.data_completeness_score >= 90 else Colors.WARNING),
             ("Empty Groups", gr.empty_groups, Colors.WARNING if gr.empty_groups > 0 else Colors.SUCCESS),
             ("Total Permissions", gr.total_permissions, Colors.ACCENT),
             ("Overprivileged", gr.overprivileged_users, Colors.DANGER if gr.overprivileged_users > 0 else Colors.SUCCESS),
@@ -501,13 +510,17 @@ class ExcelReportGenerator:
         ws.cell(row=lic_row - 1, column=7, value="LICENSE DISTRIBUTION").font = Font(name="Calibri", size=12, bold=True, color=Colors.PRIMARY)
         lic_dist: Dict[str, int] = {}
         for u in self.users:
-            lic_dist[u.access_level] = lic_dist.get(u.access_level, 0) + 1
+            level = u.access_level or "Unknown"
+            lic_dist[level] = lic_dist.get(level, 0) + 1
         for ci, hdr in enumerate(["License Type", "Users", "Active", "Inactive"]):
             cell = ws.cell(row=lic_row, column=7 + ci, value=hdr)
             cell.font = _hf(); cell.fill = _hfill(); cell.alignment = _center(); cell.border = _border()
         for j, (lic, cnt) in enumerate(sorted(lic_dist.items(), key=lambda x: x[1], reverse=True)):
             r = lic_row + 1 + j
-            active_lic = sum(1 for u in self.users if u.access_level == lic and u.is_active)
+            active_lic = sum(
+                1 for u in self.users
+                if (u.access_level or "Unknown") == lic and u.is_active
+            )
             inactive_lic = cnt - active_lic
             ws.cell(row=r, column=7, value=lic).border = _border()
             ws.cell(row=r, column=8, value=cnt).border = _border()
@@ -519,11 +532,67 @@ class ExcelReportGenerator:
             if inactive_lic > 0:
                 c10.fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
 
+        # --- Simple Measures + Top Actions (easy to understand) ---
+        status_fills = {
+            "Good": PatternFill(start_color=Colors.ALLOW, end_color=Colors.ALLOW, fill_type="solid"),
+            "Watch": PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid"),
+            "Risk": PatternFill(start_color=Colors.DENY, end_color=Colors.DENY, fill_type="solid"),
+        }
+
+        summary_row = max(end_svc_row, lic_row + len(lic_dist)) + 4
+        ws.cell(row=summary_row, column=1, value="SIMPLE GOVERNANCE MEASURES (EASY READ)").font = Font(
+            name="Calibri", size=12, bold=True, color=Colors.PRIMARY
+        )
+        self._write_headers(
+            ws, summary_row + 1,
+            ["Measure", "Value", "Status", "Why It Matters"],
+            [24, 16, 12, 58],
+        )
+        for i, measure in enumerate(gr.simple_measures):
+            r = summary_row + 2 + i
+            self._write_row(ws, r, [measure.label, measure.value, measure.status, measure.description], alt=i % 2 == 1)
+            st = ws.cell(row=r, column=3)
+            st.alignment = _center()
+            st.fill = status_fills.get(measure.status, PatternFill())
+
+        ws.cell(row=summary_row, column=6, value="TOP ACTION PLAN").font = Font(
+            name="Calibri", size=12, bold=True, color=Colors.PRIMARY
+        )
+        action_headers = ["Priority", "Risk", "Category", "Action", "Why Now"]
+        for c, h in enumerate(action_headers, 6):
+            cell = ws.cell(row=summary_row + 1, column=c, value=h)
+            cell.font = _hf()
+            cell.fill = _hfill()
+            cell.alignment = _center()
+            cell.border = _border()
+
+        for i, action in enumerate(gr.top_actions):
+            r = summary_row + 2 + i
+            vals = [action.priority, action.risk_level, action.category, action.action, action.rationale]
+            for j, val in enumerate(vals):
+                c = 6 + j
+                cell = ws.cell(row=r, column=c, value=val)
+                cell.font = Font(name="Calibri", size=10)
+                cell.border = _border()
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+                if i % 2 == 1:
+                    cell.fill = PatternFill(start_color=Colors.ROW_ALT, end_color=Colors.ROW_ALT, fill_type="solid")
+            risk_cell = ws.cell(row=r, column=7)
+            risk_cell.alignment = _center()
+            risk_fill = SEVERITY_FILLS.get(action.risk_level)
+            if risk_fill:
+                risk_cell.fill = risk_fill
+                if action.risk_level in (RiskLevel.CRITICAL, RiskLevel.HIGH):
+                    risk_cell.font = Font(name="Calibri", size=10, bold=True, color=Colors.WHITE)
+
         ws.column_dimensions["A"].width = 22
         ws.column_dimensions["B"].width = 18
         ws.column_dimensions["C"].width = 18
-        for col_letter in ["G", "H", "I", "J"]:
-            ws.column_dimensions[col_letter].width = 16
+        ws.column_dimensions["F"].width = 10
+        ws.column_dimensions["G"].width = 12
+        ws.column_dimensions["H"].width = 22
+        ws.column_dimensions["I"].width = 38
+        ws.column_dimensions["J"].width = 32
 
     # ---- Sheet: Scoring Methodology ----
 
@@ -585,7 +654,7 @@ class ExcelReportGenerator:
             (
                 "Access Control", "25%",
                 "Admin user count, external user access, empty groups, branch policy bypasses, large groups",
-                "GOV-001, GOV-004, GOV-005, GOV-008",
+                "GOV-001, GOV-004, GOV-005, GOV-008, GOV-011",
                 f"{gr.score.access_control_score:.1f}",
             ),
             (
@@ -658,6 +727,8 @@ class ExcelReportGenerator:
              "No destructive findings", "Low/Med destructive findings (score 65)", "Custom groups have destructive perms (score 30)"),
             ("GOV-010", "License Optimization", "License Optimization",
              "No license findings", "Stakeholder mismatches (score 75)", "Premium licenses on inactive users (score 40)"),
+            ("GOV-011", "Project-Scope Boundary Assurance", "Data Scope",
+             "Project-level APIs only", "N/A", "Org-level fallback used (score 20)"),
         ]
 
         # Map control IDs to actual results
@@ -1088,15 +1159,16 @@ class ExcelReportGenerator:
                             [24, 12, 10, 10, 14, 14])
         lic_data: Dict[str, Dict] = {}
         for u in self.users:
-            if u.access_level not in lic_data:
-                lic_data[u.access_level] = {"total": 0, "active": 0, "inactive": 0, "idle_days": []}
-            lic_data[u.access_level]["total"] += 1
+            level = u.access_level or "Unknown"
+            if level not in lic_data:
+                lic_data[level] = {"total": 0, "active": 0, "inactive": 0, "idle_days": []}
+            lic_data[level]["total"] += 1
             if u.is_active:
-                lic_data[u.access_level]["active"] += 1
+                lic_data[level]["active"] += 1
             else:
-                lic_data[u.access_level]["inactive"] += 1
+                lic_data[level]["inactive"] += 1
             if u.last_accessed:
-                lic_data[u.access_level]["idle_days"].append((now - u.last_accessed).days)
+                lic_data[level]["idle_days"].append((now - u.last_accessed).days)
 
         for j, (lic, data) in enumerate(sorted(lic_data.items(), key=lambda x: x[1]["total"], reverse=True)):
             r = row + 1 + j
@@ -1395,7 +1467,7 @@ class ExcelReportGenerator:
                 days_since = ""
                 access_str = "No Data"
             self._write_row(ws, r, [
-                u.display_name, u.mail_address, u.access_level, u.license_display_name,
+                u.display_name, u.mail_address, (u.access_level or "Unknown"), u.license_display_name,
                 "Yes" if u.is_active else "No", u.origin,
                 u.date_created.strftime("%Y-%m-%d") if u.date_created else "",
                 access_str, days_since,
@@ -1411,7 +1483,8 @@ class ExcelReportGenerator:
         # Access level chart
         ac: Dict[str, int] = {}
         for u in self.users:
-            ac[u.access_level] = ac.get(u.access_level, 0) + 1
+            level = u.access_level or "Unknown"
+            ac[level] = ac.get(level, 0) + 1
         cr = row + len(self.users) + 2
         ws.cell(row=cr, column=1, value="Access Level"); ws.cell(row=cr, column=2, value="Count")
         for j, (al, cnt) in enumerate(sorted(ac.items())):
@@ -1948,10 +2021,23 @@ class ExcelReportGenerator:
             ws.add_chart(bar, f"D{cr}")
 
     def _generate_recommendations(self) -> List[Dict]:
+        if self.gov.top_actions:
+            recs = []
+            for action in self.gov.top_actions:
+                impact = action.risk_level
+                effort = "Low" if any(w in action.action for w in ("Remove", "Review")) else "Medium"
+                recs.append({
+                    "priority": action.priority,
+                    "category": action.category,
+                    "recommendation": action.action,
+                    "impact": impact,
+                    "effort": effort,
+                })
+            return recs
+
         recs = []
         seen = set()
         rp = {RiskLevel.CRITICAL: 1, RiskLevel.HIGH: 2, RiskLevel.MEDIUM: 3, RiskLevel.LOW: 4, RiskLevel.INFO: 5}
-
         for f in sorted(self.gov.findings, key=lambda x: rp.get(x.risk_level, 5)):
             key = (f.category, f.recommendation)
             if key in seen:
@@ -1960,6 +2046,11 @@ class ExcelReportGenerator:
             p = rp.get(f.risk_level, 5)
             impact = "Critical" if p <= 1 else "High" if p <= 2 else "Medium" if p <= 3 else "Low"
             effort = "Low" if any(w in f.recommendation for w in ("Remove", "Review")) else "Medium"
-            recs.append({"priority": p, "category": f.category, "recommendation": f.recommendation,
-                         "impact": impact, "effort": effort})
+            recs.append({
+                "priority": p,
+                "category": f.category,
+                "recommendation": f.recommendation,
+                "impact": impact,
+                "effort": effort,
+            })
         return recs
